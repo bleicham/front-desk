@@ -42,6 +42,9 @@ jobs:
         env:
           REPOS_TOKEN: ${{ secrets.REPOS_TOKEN }}
 
+      - name: Check retrieval accuracy
+        run: npm run evaluate
+
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
         with:

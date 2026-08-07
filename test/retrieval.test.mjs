@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   buildStructuredCodeListAnswer,
   extractCodeTerms,
+  filterChunksByScope,
   findExactCodeLines,
   formatExactCodeResults,
   formatStructuredRows,
   rankChunks,
+  verifyCitedAnswer,
 } from "../site/retrieval.js";
 
 test("extracts clinical identifiers and ignores likely years", () => {
@@ -104,4 +106,41 @@ test("boosts indexed website pages for explicit webpage questions", () => {
   ];
   const { results } = rankChunks(chunks, [1, 0], "What does the Hubverse website say about model output?");
   assert.equal(results[0].chunk.kind, "website");
+});
+
+test("BM25 rescues a rare exact phrase when semantic similarity is weak", () => {
+  const chunks = [
+    { title: "Model tasks", text: "A model task is defined in tasks.json.", embedding: [0.1, 0] },
+    { title: "General model guidance", text: "Models and forecasts", embedding: [0.8, 0] },
+  ];
+  const { results } = rankChunks(chunks, [1, 0], "Where is tasks.json defined?", { minScore: 0.25 });
+  assert.equal(results[0].chunk.title, "Model tasks");
+  assert.equal(results[0].bm25 > 0, true);
+});
+
+test("source scopes keep website, docs, and workbook retrieval separate", () => {
+  const chunks = [
+    { kind: "spreadsheet", sheet: "ICD-10", source: "codes.xlsx" },
+    { kind: "website", source: "hubverse.io/tools/data.html", link: "https://hubverse.io/tools/data.html" },
+    { kind: "website", source: "docs.hubverse.io/en/stable/", link: "https://docs.hubverse.io/en/stable/" },
+  ];
+  assert.deepEqual(filterChunksByScope(chunks, "codes"), [chunks[0]]);
+  assert.deepEqual(filterChunksByScope(chunks, "website"), [chunks[1]]);
+  assert.deepEqual(filterChunksByScope(chunks, "docs"), [chunks[2]]);
+});
+
+test("citation verification rejects unsupported generated claims", () => {
+  const results = [{ chunk: { text: "Hubverse model tasks are recorded in tasks.json files." } }];
+  assert.equal(
+    verifyCitedAnswer("Model tasks are recorded in tasks.json files [1].", results).ok,
+    true,
+  );
+  assert.equal(
+    verifyCitedAnswer("The cafeteria closes at seven every evening [1].", results).ok,
+    false,
+  );
+  assert.equal(
+    verifyCitedAnswer("Model tasks are recorded in tasks.json files.", results).ok,
+    false,
+  );
 });

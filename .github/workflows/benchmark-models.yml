@@ -1,0 +1,60 @@
+name: Compare free embedding models
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MiniLM (current)
+            slug: minilm
+            model: Xenova/all-MiniLM-L6-v2
+            query_prefix: ""
+          - name: BGE small v1.5
+            slug: bge-small
+            model: Xenova/bge-small-en-v1.5
+            query_prefix: "Represent this sentence for searching relevant passages: "
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: front-desk-${{ matrix.slug }}-quantized
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build comparison index
+        run: npm run build
+        env:
+          EMBEDDING_MODEL: ${{ matrix.model }}
+          EMBEDDING_QUERY_PREFIX: ${{ matrix.query_prefix }}
+          REPOS_TOKEN: ${{ secrets.REPOS_TOKEN }}
+
+      - name: Evaluate retrieval
+        run: npm run evaluate -- --output evaluation-${{ matrix.slug }}.json
+
+      - name: Upload evaluation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-${{ matrix.slug }}
+          path: evaluation-${{ matrix.slug }}.json
+          if-no-files-found: warn
+

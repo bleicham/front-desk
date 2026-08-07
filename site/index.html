@@ -58,6 +58,16 @@
         <button type="submit" class="ask-button" id="ask-button">Ask</button>
       </form>
 
+      <div class="source-filter">
+        <label for="source-scope">Search in</label>
+        <select id="source-scope" aria-label="Choose which sources to search">
+          <option value="auto">Auto — all sources</option>
+          <option value="codes">Clinical codes workbook</option>
+          <option value="website">Hubverse website</option>
+          <option value="docs">Hubverse documentation</option>
+        </select>
+      </div>
+
       <div class="chips" id="chips"></div>
       <p class="status" id="status" role="status" aria-live="polite"></p>
     </section>

@@ -14,7 +14,13 @@
  */
 
 import { env, pipeline } from "@xenova/transformers";
-import { buildStructuredCodeListAnswer, formatExactCodeResults, rankChunks } from "../site/retrieval.js";
+import {
+  buildStructuredCodeListAnswer,
+  formatExactCodeResults,
+  isConfidentResult,
+  rankChunks,
+  verifyCitedAnswer,
+} from "../site/retrieval.js";
 
 env.cacheDir = ".model-cache";
 
@@ -103,7 +109,8 @@ async function main() {
   } else {
     console.log(`Embedding question with ${index.model}…`);
     const embed = await pipeline("feature-extraction", index.model, { quantized: true });
-    const output = await embed(question.slice(0, 2000), { pooling: "mean", normalize: true });
+    const embeddingQuestion = `${index.queryPrefix || ""}${question.slice(0, 2000)}`;
+    const output = await embed(embeddingQuestion, { pooling: "mean", normalize: true });
     const query = Array.from(output.data);
     ({ results, codeTerms } = rankChunks(index.chunks, query, question, {
       topK: TOP_K,
@@ -111,9 +118,7 @@ async function main() {
     }));
   }
 
-  const confidence = results.length ? results[0].cosine : 0;
-  const hasExactCodeMatch = results.some((result) => result.exactCodeMatch);
-  if (results.length === 0 || (!hasExactCodeMatch && confidence < 0.32)) {
+  if (!isConfidentResult(results[0])) {
     await postComment(
       "🛎️ Thanks for your question! I searched our reference material but didn't " +
       "find a confident answer — rather than guess, I'll leave this for a maintainer. " +
@@ -165,7 +170,14 @@ async function main() {
     });
     if (!modelRes.ok) throw new Error(`GitHub Models → ${modelRes.status}: ${await modelRes.text()}`);
     const data = await modelRes.json();
-    answer = data.choices?.[0]?.message?.content?.trim() || null;
+    const candidate = data.choices?.[0]?.message?.content?.trim() || null;
+    if (candidate) {
+      const verification = verifyCitedAnswer(candidate, results);
+      if (!verification.ok) {
+        throw new Error("generated answer did not pass citation support verification");
+      }
+    }
+    answer = candidate;
   } catch (err) {
     console.warn(`Model call failed, falling back to passages: ${err.message}`);
   }

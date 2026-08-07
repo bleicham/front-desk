@@ -1,0 +1,63 @@
+[
+  {
+    "id": "icd-exact-j1282",
+    "type": "lookup",
+    "scope": "codes",
+    "question": "What is ICD-10 code J12.82?",
+    "answerIncludes": ["J12.82", "Pneumonia due to coronavirus disease 2019"]
+  },
+  {
+    "id": "loinc-exact-49656-2",
+    "type": "lookup",
+    "scope": "codes",
+    "question": "What does LOINC 49656-2 mean?",
+    "answerIncludes": ["49656-2", "HIV protease gene mutations"]
+  },
+  {
+    "id": "hiv-complete-loinc-list",
+    "type": "code-list",
+    "scope": "codes",
+    "question": "List all LOINC codes for HIV",
+    "answerIncludes": ["49656-2"],
+    "minUniqueCodes": 200,
+    "systems": ["LOINC"]
+  },
+  {
+    "id": "covid-cross-system-list",
+    "type": "code-list",
+    "scope": "codes",
+    "question": "What are all codes for COVID-19?",
+    "systems": ["ICD-10", "CVX", "CPT"],
+    "minUniqueCodes": 3
+  },
+  {
+    "id": "hubverse-website-scope",
+    "type": "lookup",
+    "scope": "website",
+    "question": "What is the Hubverse?",
+    "sourcePattern": "^(?:https?://)?(?:www\\.)?hubverse\\.io"
+  },
+  {
+    "id": "hubverse-docs-scope",
+    "type": "lookup",
+    "scope": "docs",
+    "question": "How should Hubverse model output data be formatted?",
+    "sourcePattern": "^(?:https?://)?docs\\.hubverse\\.io"
+  },
+  {
+    "id": "model-output-page-diagnostic",
+    "type": "lookup",
+    "scope": "docs",
+    "question": "What columns and formats are used in Hubverse model-output files?",
+    "sourcePattern": "model-output",
+    "required": false
+  },
+  {
+    "id": "unsupported-question-abstains",
+    "type": "abstain",
+    "scope": "auto",
+    "question": "What time does the staff cafeteria close tonight?",
+    "required": false
+  }
+]
+

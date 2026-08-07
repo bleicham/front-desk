@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { env, pipeline } from "@xenova/transformers";
+import { canonicalUrl, extractLinks, extractSitemapUrls } from "./crawl-utils.mjs";
 
 // Cache the downloaded model inside the workspace so GitHub Actions
 // can restore it between runs (see .github/workflows/deploy.yml).
@@ -25,7 +26,8 @@ env.cacheDir = ".model-cache";
 const KNOWLEDGE_DIR = "knowledge";
 const SOURCES_FILE = "sources.yml";
 const OUTPUT_FILE = "site/index.json";
-const MODEL = "Xenova/all-MiniLM-L6-v2";
+const MODEL = process.env.EMBEDDING_MODEL || "Xenova/all-MiniLM-L6-v2";
+const QUERY_PREFIX = process.env.EMBEDDING_QUERY_PREFIX || "";
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // skip anything over 10 MB
 const FETCH_TIMEOUT_MS = 20000;
 const CHUNK_CHARS = 1400;
@@ -311,36 +313,6 @@ async function collectWebsites(documents, websites, report) {
     }
   }
 
-  function canonicalUrl(value, base) {
-    try {
-      const url = new URL(value, base);
-      if (!/^https?:$/.test(url.protocol)) return null;
-      if (/\.(?:css|js|mjs|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|zip|gz|tar|mp4|mp3)$/i.test(url.pathname)) {
-        return null;
-      }
-      url.hash = "";
-      url.search = ""; // avoids duplicate tracking/filter URLs
-      return url.toString();
-    } catch {
-      return null;
-    }
-  }
-
-  function extractLinks(content, pageUrl) {
-    const links = [];
-    const patterns = [
-      /\bhref\s*=\s*["']([^"']+)["']/gi,
-      /\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
-    ];
-    for (const pattern of patterns) {
-      for (const match of content.matchAll(pattern)) {
-        const url = canonicalUrl(match[1].replace(/&amp;/g, "&"), pageUrl);
-        if (url) links.push(url);
-      }
-    }
-    return [...new Set(links)];
-  }
-
   async function fetchWebsitePage(url, customTitle) {
     let text = null;
     let title = customTitle;
@@ -396,6 +368,41 @@ async function collectWebsites(documents, websites, report) {
     return { text, title: title || url, isMarkdown, links: [...new Set(discoveredLinks)] };
   }
 
+  async function discoverSitemapPages(rootUrl, pathPrefix) {
+    const sitemapQueue = [
+      new URL("/sitemap.xml", rootUrl.origin).toString(),
+      new URL(`${pathPrefix.replace(/\/?$/, "/")}sitemap.xml`, rootUrl.origin).toString(),
+    ];
+    const visitedSitemaps = new Set();
+    const pageUrls = [];
+
+    while (sitemapQueue.length && visitedSitemaps.size < 8) {
+      const sitemapUrl = sitemapQueue.shift();
+      if (visitedSitemaps.has(sitemapUrl)) continue;
+      visitedSitemaps.add(sitemapUrl);
+      try {
+        const res = await fetchWithTimeout(sitemapUrl, {
+          "user-agent": BROWSER_UA,
+          accept: "application/xml,text/xml,*/*",
+        });
+        if (!res.ok) continue;
+        const xml = await res.text();
+        for (const found of extractSitemapUrls(xml, sitemapUrl)) {
+          const candidate = new URL(found);
+          if (candidate.origin !== rootUrl.origin) continue;
+          if (/\.xml$/i.test(candidate.pathname)) {
+            if (!visitedSitemaps.has(found)) sitemapQueue.push(found);
+          } else if (candidate.pathname.startsWith(pathPrefix)) {
+            pageUrls.push(found);
+          }
+        }
+      } catch {
+        // Sitemaps are an optimization. Link crawling remains the fallback.
+      }
+    }
+    return [...new Set(pageUrls)];
+  }
+
   for (const entry of websites) {
     const spec = typeof entry === "string" ? { url: entry } : entry;
     const root = canonicalUrl(spec.url);
@@ -405,8 +412,15 @@ async function collectWebsites(documents, websites, report) {
       ? rootUrl.pathname
       : rootUrl.pathname.replace(/[^/]+$/, ""));
     const maxPages = spec.crawl ? Math.max(1, Math.min(Number(spec.maxPages) || 25, 100)) : 1;
-    const queue = [root];
+    const sitemapPages = spec.crawl && spec.sitemap !== false
+      ? await discoverSitemapPages(rootUrl, pathPrefix)
+      : [];
+    const queue = [root, ...sitemapPages];
     let fetchedCount = 0;
+
+    if (sitemapPages.length) {
+      console.log(`Discovered ${sitemapPages.length} page(s) from sitemap for ${root}`);
+    }
 
     while (queue.length && fetchedCount < maxPages) {
       const url = queue.shift();
@@ -605,6 +619,7 @@ async function main() {
 
   const index = {
     model: MODEL,
+    queryPrefix: QUERY_PREFIX,
     generated: new Date().toISOString(),
     repo,
     branch,

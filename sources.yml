@@ -10,12 +10,14 @@ websites:
   - url: https://hubverse.io/
     title: Hubverse
     crawl: true
-    maxPages: 40
+    sitemap: true
+    maxPages: 60
 
   - url: https://docs.hubverse.io/en/stable/
     title: Hubverse Documentation
     crawl: true
-    maxPages: 40
+    sitemap: true
+    maxPages: 60
 
   # Plain URL — one entry per page you want indexed:
   # - https://example.com/handbook

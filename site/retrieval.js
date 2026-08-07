@@ -4,6 +4,8 @@ const STOPWORDS = new Set([
   "of", "in", "on", "for", "and", "or", "my", "our", "it", "this", "that",
 ]);
 
+const TOKEN_PATTERN = /[a-z0-9]+(?:[._-][a-z0-9]+)*/g;
+
 function dot(a, b) {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
@@ -12,6 +14,50 @@ function dot(a, b) {
 
 function unique(values) {
   return [...new Set(values)];
+}
+
+function searchTokens(value) {
+  const raw = String(value || "").toLowerCase().match(TOKEN_PATTERN) || [];
+  const expanded = raw.flatMap((token) => {
+    const parts = token.split(/[._-]+/).filter((part) => part.length >= 2);
+    return parts.length > 1 ? [token, ...parts] : [token];
+  });
+  return expanded.filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+}
+
+function tokenCounts(value, weight = 1, counts = new Map()) {
+  for (const token of searchTokens(value)) {
+    counts.set(token, (counts.get(token) || 0) + weight);
+  }
+  return counts;
+}
+
+/** Limit retrieval to the source family selected in the interface. */
+export function filterChunksByScope(chunks, scope = "auto") {
+  if (!scope || scope === "auto") return chunks;
+  return chunks.filter((chunk) => {
+    if (scope === "codes") return chunk.kind === "spreadsheet" || Boolean(chunk.sheet);
+    if (scope === "docs") {
+      return chunk.kind === "website" && /(^|\.)docs\.hubverse\.io$/i.test(sourceHost(chunk));
+    }
+    if (scope === "website") {
+      return chunk.kind === "website"
+        && /(^|\.)hubverse\.io$/i.test(sourceHost(chunk))
+        && !/(^|\.)docs\.hubverse\.io$/i.test(sourceHost(chunk));
+    }
+    return true;
+  });
+}
+
+function sourceHost(chunk) {
+  const candidate = chunk.link || (String(chunk.source || "").startsWith("http")
+    ? chunk.source
+    : `https://${chunk.source || ""}`);
+  try {
+    return new URL(candidate).hostname;
+  } catch {
+    return "";
+  }
 }
 
 /** Extract identifiers that should be matched literally, not semantically. */
@@ -314,30 +360,122 @@ export function rankChunks(chunks, queryVector, question, options = {}) {
   const topK = options.topK || 6;
   const exactTopK = options.exactTopK || 24;
   const minScore = options.minScore ?? 0.25;
-  const terms = String(question || "").toLowerCase()
-    .match(/[a-z0-9][a-z0-9._-]{2,}/g)
-    ?.filter((term) => !STOPWORDS.has(term)) || [];
+  const terms = unique(searchTokens(question));
   const codeTerms = extractCodeTerms(question);
   const websiteIntent = /\b(?:website|webpage|web page|site|hubverse)\b/i.test(question);
 
-  const ranked = chunks
-    .map((chunk) => {
-      const cosine = dot(queryVector, chunk.embedding);
-      const haystack = `${chunk.text || ""} ${chunk.title || ""} ${chunk.sheet || ""}`.toLowerCase();
-      const hits = terms.filter((term) => haystack.includes(term)).length;
-      const lexicalBoost = terms.length ? 0.15 * (hits / terms.length) : 0;
-      const exactCodeMatch = codeTerms.some((term) => containsLiteral(haystack, term));
-      const sourceBoost = websiteIntent && chunk.kind === "website" ? 0.2 : 0;
+  // BM25 gives rare exact words and acronyms real weight. Titles, sheet names,
+  // and source paths count more than ordinary body occurrences.
+  const documents = chunks.map((chunk) => {
+    const counts = tokenCounts(chunk.text, 1);
+    tokenCounts(chunk.title, 2.4, counts);
+    tokenCounts(chunk.sheet, 2, counts);
+    tokenCounts(chunk.source, 1.2, counts);
+    const length = [...counts.values()].reduce((sum, value) => sum + value, 0) || 1;
+    return { chunk, counts, length };
+  });
+  const averageLength = documents.length
+    ? documents.reduce((sum, document) => sum + document.length, 0) / documents.length
+    : 1;
+  const frequencies = new Map(terms.map((term) => [
+    term,
+    documents.reduce((count, document) => count + Number(document.counts.has(term)), 0),
+  ]));
+  const k1 = 1.2;
+  const b = 0.75;
+  const candidates = documents.map(({ chunk, counts, length }) => {
+    const cosine = dot(queryVector || [], chunk.embedding || []);
+    let bm25 = 0;
+    let lexicalHits = 0;
+    for (const term of terms) {
+      const tf = counts.get(term) || 0;
+      if (!tf) continue;
+      lexicalHits++;
+      const df = frequencies.get(term) || 0;
+      const idf = Math.log(1 + (documents.length - df + 0.5) / (df + 0.5));
+      const denominator = tf + k1 * (1 - b + b * length / averageLength);
+      bm25 += idf * (tf * (k1 + 1)) / denominator;
+    }
+    const haystack = `${chunk.text || ""} ${chunk.title || ""} ${chunk.sheet || ""}`;
+    return {
+      chunk,
+      cosine,
+      bm25,
+      lexicalCoverage: terms.length ? lexicalHits / terms.length : 0,
+      exactCodeMatch: codeTerms.some((term) => containsLiteral(haystack, term)),
+    };
+  });
+
+  const semanticOrder = [...candidates].sort((a, b) => b.cosine - a.cosine);
+  const lexicalOrder = candidates.filter((item) => item.bm25 > 0).sort((a, b) => b.bm25 - a.bm25);
+  const semanticRanks = new Map(semanticOrder.map((item, index) => [item, index + 1]));
+  const lexicalRanks = new Map(lexicalOrder.map((item, index) => [item, index + 1]));
+  const rrfK = 60;
+
+  const ranked = candidates
+    .map((result) => {
+      const semanticRank = semanticRanks.get(result);
+      const lexicalRank = lexicalRanks.get(result);
+      const semanticRrf = semanticRank ? 1 / (rrfK + semanticRank) : 0;
+      const lexicalRrf = lexicalRank ? 1 / (rrfK + lexicalRank) : 0;
+      const sourceBoost = websiteIntent && result.chunk.kind === "website" ? 0.012 : 0;
       return {
-        chunk,
-        cosine,
-        exactCodeMatch,
-        score: cosine + lexicalBoost + sourceBoost + (exactCodeMatch ? 1 : 0),
+        ...result,
+        semanticRank,
+        lexicalRank: lexicalRank || null,
+        score: semanticRrf + lexicalRrf + sourceBoost + (result.exactCodeMatch ? 1 : 0),
       };
     })
-    .filter((result) => result.exactCodeMatch || result.cosine >= minScore)
-    .sort((a, b) => b.score - a.score)
+    .filter((result) => result.exactCodeMatch || result.cosine >= minScore || result.bm25 > 0)
+    .sort((a, b) => b.score - a.score || b.cosine - a.cosine)
     .slice(0, codeTerms.length ? exactTopK : topK);
 
   return { results: ranked, codeTerms };
+}
+
+/** A shared confidence rule for the browser, issue agent, and evaluator. */
+export function isConfidentResult(result) {
+  if (!result) return false;
+  return Boolean(
+    result.exactCodeMatch
+    || result.structuredListMatch
+    || result.cosine >= 0.32
+    || (result.bm25 >= 1.2 && result.lexicalCoverage >= 0.5)
+  );
+}
+
+/**
+ * Verify that every substantive generated sentence cites at least one retrieved
+ * passage and shares meaningful words with the cited passage. This deliberately
+ * favors a safe extractive fallback over an unsupported fluent answer.
+ */
+export function verifyCitedAnswer(answer, results) {
+  const unsupported = [];
+  const sentences = String(answer || "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    const tokens = unique(searchTokens(sentence.replace(/\[\d+\]/g, "")))
+      .filter((token) => token.length >= 3);
+    if (tokens.length < 4) continue;
+
+    const citations = [...sentence.matchAll(/\[(\d+)\]/g)]
+      .map((match) => Number(match[1]) - 1)
+      .filter((index) => index >= 0 && index < results.length);
+    if (!citations.length) {
+      unsupported.push({ sentence, reason: "missing citation" });
+      continue;
+    }
+
+    const supportTokens = new Set(citations.flatMap((index) => searchTokens(results[index].chunk.text)));
+    const overlap = tokens.filter((token) => supportTokens.has(token)).length;
+    const coverage = overlap / tokens.length;
+    if (overlap < 2 || coverage < 0.35) {
+      unsupported.push({ sentence, reason: `weak cited-word overlap (${Math.round(coverage * 100)}%)` });
+    }
+  }
+
+  return { ok: sentences.length > 0 && unsupported.length === 0, unsupported };
 }

@@ -12,9 +12,12 @@
 
 import {
   buildStructuredCodeListAnswer,
+  filterChunksByScope,
   formatExactCodeResults,
   formatStructuredRows,
+  isConfidentResult,
   rankChunks,
+  verifyCitedAnswer,
 } from "./retrieval.js";
 
 const CONFIG = window.FRONT_DESK || {};
@@ -28,6 +31,7 @@ const els = {
   form: document.getElementById("ask-form"),
   question: document.getElementById("question"),
   askButton: document.getElementById("ask-button"),
+  sourceScope: document.getElementById("source-scope"),
   chips: document.getElementById("chips"),
   status: document.getElementById("status"),
   ledger: document.getElementById("ledger"),
@@ -248,11 +252,12 @@ async function loadEmbedder() {
   if (embedder) return embedder;
   embedderPromise ??= (async () => {
     setStatus("Warming up the desk — loading the search model (first visit only, ~25 MB)…");
+    const idx = await loadIndex();
     const { pipeline, env } = await import(
       "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"
     );
     env.allowLocalModels = false;
-    embedder = await pipeline("feature-extraction", (index && index.model) || "Xenova/all-MiniLM-L6-v2", {
+    embedder = await pipeline("feature-extraction", idx.model || "Xenova/all-MiniLM-L6-v2", {
       quantized: true,
     });
     setStatus("");
@@ -271,9 +276,10 @@ if ("requestIdleCallback" in window) {
 
 /* ── Retrieval ────────────────────────────────────────────── */
 
-async function retrieve(question) {
+async function retrieve(question, scope = "auto") {
   const idx = await loadIndex();
-  const structuredList = buildStructuredCodeListAnswer(idx.chunks, question);
+  const scopedChunks = filterChunksByScope(idx.chunks, scope);
+  const structuredList = buildStructuredCodeListAnswer(scopedChunks, question);
   if (structuredList) {
     const results = structuredList.chunks.slice(0, TOP_K).map((chunk) => ({
       chunk,
@@ -291,9 +297,10 @@ async function retrieve(question) {
   }
 
   await loadEmbedder();
-  const output = await embedder(question, { pooling: "mean", normalize: true });
+  const embeddingQuestion = `${idx.queryPrefix || ""}${question}`;
+  const output = await embedder(embeddingQuestion, { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
-  const { results, codeTerms } = rankChunks(idx.chunks, query, question, {
+  const { results, codeTerms } = rankChunks(scopedChunks, query, question, {
     topK: TOP_K,
     minScore: MIN_SCORE,
   });
@@ -428,14 +435,14 @@ function sourceUrl(idx, chunk) {
   return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
-function addFeedback(entry, question, answer) {
+function addFeedback(entry, question, answer, scope = "auto") {
   const idx = index;
   if (!idx || !idx.repo) return;
   const row = document.createElement("p");
   row.className = "feedback-row";
   const title = encodeURIComponent(`[Front Desk feedback] ${question.slice(0, 80)}`);
   const body = encodeURIComponent(
-    `**Question asked:**\n${question}\n\n**Answer shown:**\n${answer.slice(0, 1000)}\n\n**What was wrong or missing:**\n(please describe)`
+    `**Question asked:**\n${question}\n\n**Search scope:** ${scope}\n\n**Answer shown:**\n${answer.slice(0, 1000)}\n\n**What was wrong or missing:**\n(please describe)`
   );
   row.innerHTML =
     `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a> so we can fix the source material.`;
@@ -480,7 +487,7 @@ function renderSources(entry, idx, results) {
       <p class="source-title">${escapeHtml(r.chunk.title)}</p>
       <p class="source-path">${escapeHtml(r.chunk.source)}</p>
       <p class="source-snippet">${escapeHtml(r.chunk.text.slice(0, 220))}</p>
-      <p class="source-score">${Math.round(Math.max(0, Math.min(1, r.cosine)) * 100)}% semantic match</p>
+      <p class="source-score">${r.bm25 > 0 ? "Hybrid semantic + exact-word match" : `${Math.round(Math.max(0, Math.min(1, r.cosine)) * 100)}% semantic match`}</p>
     `;
     wrap.appendChild(card);
   }
@@ -494,6 +501,7 @@ let busy = false;
 els.form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const question = els.question.value.trim();
+  const scope = els.sourceScope?.value || "auto";
   if (!question || busy) return;
 
   busy = true;
@@ -512,13 +520,13 @@ els.form.addEventListener("submit", async (event) => {
   const answerEl = entry.querySelector(".entry-answer");
 
   try {
-    const { results, query, codeTerms, structuredListAnswer } = await retrieve(question);
+    const { results, query, codeTerms, structuredListAnswer } = await retrieve(question, scope);
     const idx = await loadIndex();
 
     const confidence = results.length ? results[0].cosine : 0;
 
     const hasExactCodeMatch = results.some((result) => result.exactCodeMatch);
-    if (results.length === 0 || (!hasExactCodeMatch && confidence < 0.32)) {
+    if (!isConfidentResult(results[0])) {
       answerEl.className = "entry-answer empty-result";
       answerEl.textContent =
         "I don't have a confident answer for that in our files — rather than guess, I'll say so. Try rephrasing, or this topic may need to be added to the knowledge folder.";
@@ -529,7 +537,7 @@ els.form.addEventListener("submit", async (event) => {
         entry.appendChild(note);
         renderSources(entry, idx, results);
       }
-      addFeedback(entry, question, "(no confident answer)");
+      addFeedback(entry, question, "(no confident answer)", scope);
       return;
     }
 
@@ -542,12 +550,16 @@ els.form.addEventListener("submit", async (event) => {
     } else if (stored.key) {
       answerEl.textContent = "Composing an answer…";
       try {
-        answerEl.textContent = await composeAnswer(question, results);
+        const generatedAnswer = await composeAnswer(question, results);
+        const verification = verifyCitedAnswer(generatedAnswer, results);
+        if (!verification.ok) throw new Error("the generated answer was not fully supported by its citations");
+        answerEl.textContent = generatedAnswer;
       } catch (err) {
-        answerEl.textContent = results[0].chunk.text;
+        answerEl.textContent = formatExactCodeResults(results, codeTerms)
+          || await composeExtractiveAnswer(query, results);
         const note = document.createElement("p");
         note.className = "entry-note";
-        note.textContent = `Claude synthesis failed (${err.message}) — showing the best matching passage instead.`;
+        note.textContent = `Answer synthesis was unavailable or did not pass source verification (${err.message}) — showing a source-grounded answer instead.`;
         entry.appendChild(note);
       }
     } else {
@@ -560,7 +572,7 @@ els.form.addEventListener("submit", async (event) => {
       entry.appendChild(note);
     }
 
-    if (!hasExactCodeMatch && confidence < 0.45) {
+    if (!hasExactCodeMatch && confidence < 0.45 && (results[0].lexicalCoverage || 0) < 0.7) {
       const caution = document.createElement("p");
       caution.className = "entry-note";
       caution.textContent = "Heads up: this match wasn't strong, so double-check against the sources below.";
@@ -568,7 +580,7 @@ els.form.addEventListener("submit", async (event) => {
     }
 
     renderSources(entry, idx, results);
-    addFeedback(entry, question, answerEl.textContent);
+    addFeedback(entry, question, answerEl.textContent, scope);
     ringBell({ soft: true }); // answer's ready — a gentle ding
   } catch (err) {
     answerEl.className = "entry-answer empty-result";
