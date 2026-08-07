@@ -24,8 +24,7 @@ const els = {
   chips: document.getElementById("chips"),
   status: document.getElementById("status"),
   ledger: document.getElementById("ledger"),
-  bell: document.getElementById("bell"),
-  bellButton: document.getElementById("bell-button"),
+  bell: null, // created by setupBell() below
   indexMeta: document.getElementById("index-meta"),
   settingsToggle: document.getElementById("settings-toggle"),
   settings: document.getElementById("settings"),
@@ -36,53 +35,137 @@ const els = {
 };
 
 /* ── The bell ─────────────────────────────────────────────── */
-/* A real desk-bell chime, synthesized with the Web Audio API —
-   no sound files. Clicking the bell rings it and invites a question. */
+/* Fully self-contained: builds its own button and graphic, so it
+   works with any version of index.html. The sound is a synthesized
+   brass counter bell — metallic strike + shimmering ring — via the
+   Web Audio API. No sound files. */
 
 let audioCtx = null;
 
-function ringBell({ soft = false } = {}) {
+function ensureAudio() {
   try {
     audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  } catch {
+    return null;
+  }
+}
 
-    const now = audioCtx.currentTime;
-    const master = audioCtx.createGain();
-    master.gain.value = soft ? 0.10 : 0.22;
-    master.connect(audioCtx.destination);
+// Browsers block sound until the page gets a user gesture; unlock on the
+// very first tap/click/keypress anywhere so later dings always play.
+for (const evt of ["pointerdown", "keydown", "touchstart"]) {
+  window.addEventListener(evt, ensureAudio, { once: true, passive: true });
+}
 
-    // A brass desk bell is a bright fundamental plus inharmonic overtones,
-    // each decaying at its own rate — higher partials die out faster.
+function ringBell({ soft = false } = {}) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.value = soft ? 0.16 : 0.4;
+    master.connect(ctx.destination);
+
+    // 1) The strike — a sharp metallic "tick" (filtered noise burst).
+    const noiseLen = 0.03;
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * noiseLen, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 2500;
+    const strikeGain = ctx.createGain();
+    strikeGain.gain.setValueAtTime(0.7, now);
+    strikeGain.gain.exponentialRampToValueAtTime(0.001, now + noiseLen);
+    noise.connect(hp).connect(strikeGain).connect(master);
+    noise.start(now);
+
+    // 2) The ring — inharmonic brass partials. Each partial is a detuned
+    //    pair, which beats slightly and gives the real-bell shimmer.
     const partials = [
-      { freq: 1245, gain: 1.0, decay: 1.6 },
-      { freq: 1875, gain: 0.55, decay: 1.1 },
-      { freq: 2510, gain: 0.30, decay: 0.7 },
-      { freq: 3320, gain: 0.15, decay: 0.4 },
+      { freq: 1479, gain: 1.0,  decay: 2.4 },
+      { freq: 2093, gain: 0.5,  decay: 1.7 },
+      { freq: 2794, gain: 0.32, decay: 1.1 },
+      { freq: 3729, gain: 0.18, decay: 0.6 },
+      { freq: 4699, gain: 0.08, decay: 0.35 },
     ];
 
     for (const p of partials) {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = p.freq;
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(p.gain, now + 0.004); // sharp strike
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + p.decay);
-      osc.connect(gain).connect(master);
-      osc.start(now);
-      osc.stop(now + p.decay + 0.05);
+      for (const cents of [-5, 5]) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = p.freq;
+        osc.detune.value = cents;
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(p.gain / 2, now + 0.003);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + p.decay);
+        osc.connect(gain).connect(master);
+        osc.start(now);
+        osc.stop(now + p.decay + 0.05);
+      }
     }
   } catch {
     /* audio unavailable — the bell stays decorative */
   }
 }
 
-function shakeBell() {
-  els.bell.classList.add("ringing");
-  setTimeout(() => {
-    if (!busy) els.bell.classList.remove("ringing");
-  }, 700);
+// A proper counter bell: domed top, plunger button, round base.
+const BELL_SVG = `
+  <svg class="bell" viewBox="0 0 40 34" width="30" height="26" aria-hidden="true">
+    <g class="bell-plunger">
+      <rect x="18" y="3" width="4" height="6" rx="1.4" fill="var(--brass)"/>
+      <rect x="15.5" y="1" width="9" height="3.4" rx="1.7" fill="var(--brass)"/>
+    </g>
+    <g class="bell-dome">
+      <path d="M20 7 C10.5 7 4.5 14 3.5 23 L36.5 23 C35.5 14 29.5 7 20 7 Z" fill="var(--brass)"/>
+      <path d="M20 7 C13.5 7 8.8 11.5 6.8 17 C11 12.5 15.5 10.4 20.5 10.2 C17 9.2 16 8 20 7 Z" fill="#c7a45c" opacity="0.85"/>
+    </g>
+    <rect x="1" y="24.5" width="38" height="4.5" rx="2.2" fill="var(--spruce)"/>
+    <rect x="6" y="29" width="28" height="3" rx="1.5" fill="var(--spruce)" opacity="0.55"/>
+  </svg>`;
+
+function setupBell() {
+  // Find whatever bell markup this page has and rebuild it in place.
+  const old = document.getElementById("bell") || document.querySelector(".bell");
+  if (!old) return null;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "bell-button";
+  button.id = "bell-button";
+  button.title = "Ring for service";
+  button.setAttribute("aria-label", "Ring the bell and ask a question");
+  button.innerHTML = BELL_SVG;
+
+  // If the old bell was already wrapped in a button, replace the wrapper;
+  // otherwise replace the bare SVG.
+  const target = old.closest("#bell-button, .bell-button") || old;
+  target.replaceWith(button);
+
+  button.addEventListener("click", () => {
+    ringBell();
+    shakeBell();
+    if (els.question) {
+      els.question.focus();
+      els.question.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+  return button.querySelector(".bell");
 }
+
+function shakeBell() {
+  if (!els.bell) return;
+  els.bell?.classList.add("ringing");
+  setTimeout(() => {
+    if (!busy) els.bell?.classList.remove("ringing");
+  }, 900);
+}
+
+els.bell = setupBell();
 
 /* ── Branding ─────────────────────────────────────────────── */
 
@@ -90,13 +173,6 @@ els.orgName.textContent = CONFIG.orgName || "";
 els.tagline.textContent = CONFIG.tagline || "How can we help?";
 els.subtitle.textContent = CONFIG.subtitle || "";
 document.title = `Front Desk — ${CONFIG.orgName || "Ask us anything"}`;
-
-els.bellButton.addEventListener("click", () => {
-  ringBell();
-  shakeBell();
-  els.question.focus();
-  els.question.scrollIntoView({ behavior: "smooth", block: "center" });
-});
 
 for (const suggestion of CONFIG.suggestions || []) {
   const chip = document.createElement("button");
@@ -199,11 +275,50 @@ async function retrieve(question) {
   const output = await embedder(question, { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
 
-  return idx.chunks
+  const results = idx.chunks
     .map((chunk) => ({ chunk, score: dot(query, chunk.embedding) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_K)
     .filter((r) => r.score >= MIN_SCORE);
+
+  return { results, query };
+}
+
+/**
+ * Free-mode answer composition: score every sentence in the retrieved
+ * passages against the question (same in-browser model) and stitch the
+ * strongest few into one concise answer, in reading order.
+ */
+async function composeExtractiveAnswer(queryVec, results) {
+  const candidates = [];
+  results.forEach((r, ri) => {
+    const sentences = r.chunk.text.split(/(?<=[.!?])\s+|\n+/);
+    sentences.forEach((raw, pos) => {
+      const t = raw.trim().replace(/^#{1,6}\s*/, "").replace(/^[-*•]\s*/, "");
+      if (t.length >= 40 && t.length <= 420) {
+        candidates.push({ t, order: ri * 1000 + pos });
+      }
+    });
+  });
+  if (candidates.length === 0) return results[0].chunk.text;
+
+  const pool = candidates.slice(0, 80); // bound the in-browser compute
+  const output = await embedder(pool.map((c) => c.t), { pooling: "mean", normalize: true });
+  const dims = output.dims[1];
+  pool.forEach((c, i) => {
+    let score = 0;
+    for (let k = 0; k < dims; k++) score += queryVec[k] * output.data[i * dims + k];
+    c.score = score;
+  });
+
+  const picked = pool
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4)
+    .filter((c) => c.score >= MIN_SCORE)
+    .sort((a, b) => a.order - b.order); // reading order, not score order
+
+  if (picked.length === 0) return results[0].chunk.text;
+  return picked.map((c) => c.t).join(" ");
 }
 
 /* ── Optional Claude synthesis ────────────────────────────── */
@@ -270,11 +385,15 @@ function renderEntry(question) {
     <span class="entry-time">Asked at ${time}</span>
     <p class="entry-answer">Looking that up…</p>
   `;
-  els.ledger.prepend(entry);
+  els.ledger.replaceChildren(entry); // only the current question is shown
   return entry;
 }
 
 function renderSources(entry, idx, results) {
+  const label = document.createElement("p");
+  label.className = "sources-label";
+  label.textContent = "Sources";
+  entry.appendChild(label);
   const wrap = document.createElement("div");
   wrap.className = "sources";
   // Show each source file once, at its best-scoring passage.
@@ -313,7 +432,7 @@ els.form.addEventListener("submit", async (event) => {
 
   busy = true;
   els.askButton.disabled = true;
-  els.bell.classList.add("ringing");
+  els.bell?.classList.add("ringing");
   els.question.value = "";
 
   // Creating/resuming the audio context during this click/submit gesture
@@ -327,7 +446,7 @@ els.form.addEventListener("submit", async (event) => {
   const answerEl = entry.querySelector(".entry-answer");
 
   try {
-    const results = await retrieve(question);
+    const { results, query } = await retrieve(question);
     const idx = await loadIndex();
 
     if (results.length === 0) {
@@ -349,10 +468,11 @@ els.form.addEventListener("submit", async (event) => {
         entry.appendChild(note);
       }
     } else {
-      answerEl.textContent = results[0].chunk.text;
+      answerEl.textContent = "Composing an answer…";
+      answerEl.textContent = await composeExtractiveAnswer(query, results);
       const note = document.createElement("p");
       note.className = "entry-note";
-      note.textContent = "This is the closest passage from our files. The sources below have more detail.";
+      note.textContent = "Composed from the most relevant material in our files — sources below.";
       entry.appendChild(note);
     }
 
@@ -364,7 +484,7 @@ els.form.addEventListener("submit", async (event) => {
   } finally {
     busy = false;
     els.askButton.disabled = false;
-    els.bell.classList.remove("ringing");
+    els.bell?.classList.remove("ringing");
     setStatus("");
   }
 });

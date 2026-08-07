@@ -1,0 +1,47 @@
+name: Front Desk agent (answers new issues)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  models: read   # free GitHub Models inference via GITHUB_TOKEN
+
+concurrency:
+  group: agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  answer:
+    runs-on: ubuntu-latest
+    # Don't answer issues opened by bots (including itself).
+    if: ${{ github.event.issue.user.type != 'Bot' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: minilm-l6-v2-quantized
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Answer the issue
+        run: node scripts/agent.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          # AGENT_MODEL: openai/gpt-4o-mini      # override the model here
+          # PAGES_URL: https://docs.example.com  # set if you use a custom domain

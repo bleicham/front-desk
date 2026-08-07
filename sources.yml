@@ -6,8 +6,10 @@
 # refresh), so linked pages stay reasonably current.
 
 websites:
-  - url: https://hubverse.io/
-    title: Hubverse
+
+    - url: https://hubverse.io/
+      title: Hubverse
+
   # Plain URL — one entry per page you want indexed:
   # - https://example.com/handbook
   # - https://example.com/faq

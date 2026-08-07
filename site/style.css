@@ -73,6 +73,13 @@ body {
 
 .bell.ringing { animation: ding 0.7s ease-in-out infinite; }
 
+/* Plunger press on click — the dome shakes, the button dips */
+.bell-button:active .bell-plunger { transform: translateY(2.5px); }
+.bell-plunger { transition: transform 0.08s ease; }
+
+.bell .bell-dome { transform-origin: 50% 70%; }
+
+
 @keyframes ding {
   0%, 100% { transform: rotate(0deg); }
   25% { transform: rotate(-9deg); }
@@ -255,12 +262,23 @@ body {
   margin: 10px 0 0;
 }
 
+.sources-label {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin: 20px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 /* Pigeonhole source cards */
 .sources {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
-  margin-top: 18px;
+  margin-top: 10px;
 }
 
 .source-card {
