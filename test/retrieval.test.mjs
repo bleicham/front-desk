@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildStructuredCodeListAnswer,
   extractCodeTerms,
   findExactCodeLines,
   formatExactCodeResults,
@@ -67,4 +68,40 @@ test("formats LOINC fields without dumping the full spreadsheet row", () => {
     "  Status: ACTIVE · Method: Genotyping · Specimen: Isolate",
   ].join("\n"));
   assert.equal(answer.includes("FormalName"), false);
+});
+
+test("lists every matching code without TOP_K or display truncation", () => {
+  const codes = Array.from({ length: 30 }, (_, i) => `${50000 + i}-${i % 10}`);
+  const chunks = codes.map((code, i) => ({
+    sheet: "LOINC",
+    source: "codes.xlsx",
+    text: `Row ${i + 2} | CONDITION: HIV | LOINC_NUM: ${code} | COMPONENT: HIV test ${i + 1}`,
+    embedding: [1, 0],
+  }));
+  const result = buildStructuredCodeListAnswer(chunks, "List all LOINC codes for HIV");
+  assert.equal(result.uniqueCodeCount, 30);
+  assert.equal(result.answer.includes(codes[0]), true);
+  assert.equal(result.answer.includes(codes.at(-1)), true);
+  assert.equal(result.answer.includes("30 unique LOINC codes"), true);
+});
+
+test("groups a condition's codes across code systems", () => {
+  const chunks = [
+    { sheet: "LOINC", text: "Row 2 | CONDITION: HIV | LOINC_NUM: 49656-2", embedding: [1, 0] },
+    { sheet: "ICD-10", text: "Row 2 | Condition: HIV | Code Type: ICD-10 | Code: B20", embedding: [1, 0] },
+  ];
+  const result = buildStructuredCodeListAnswer(chunks, "What are all codes for HIV?");
+  assert.equal(result.answer.includes("ICD-10 (1)"), true);
+  assert.equal(result.answer.includes("LOINC (1)"), true);
+  assert.equal(result.answer.includes("B20"), true);
+  assert.equal(result.answer.includes("49656-2"), true);
+});
+
+test("boosts indexed website pages for explicit webpage questions", () => {
+  const chunks = [
+    { kind: "website", title: "Hubverse", text: "Model output standards", embedding: [0.4, 0] },
+    { kind: "document", title: "Manual", text: "Model output standards", embedding: [0.5, 0] },
+  ];
+  const { results } = rankChunks(chunks, [1, 0], "What does the Hubverse website say about model output?");
+  assert.equal(results[0].chunk.kind, "website");
 });

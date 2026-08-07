@@ -169,6 +169,142 @@ export function formatExactCodeResults(results, codeTerms, options = {}) {
   return formatStructuredRows(items, options);
 }
 
+function normalizedWords(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function conditionScore(label, question, questionTokens) {
+  const words = normalizedWords(label).filter((word) => word !== "all");
+  if (!words.length) return 0;
+  const normalizedLabel = words.join(" ");
+  const normalizedQuestion = normalizedWords(question).join(" ");
+  if (normalizedQuestion.includes(normalizedLabel)) return 100 + words.length;
+
+  const aliasPairs = [
+    ["flu", "influenza"], ["coronavirus", "covid"], ["covid19", "covid"],
+    ["tb", "tuberculosis"], ["monkeypox", "mpox"],
+    ["hepatitis c", "hcv"], ["herpes simplex", "hsv"],
+    ["human papillomavirus", "hpv"], ["respiratory syncytial virus", "rsv"],
+  ];
+  for (const [alias, canonical] of aliasPairs) {
+    if (normalizedQuestion.includes(alias) && normalizedLabel.includes(canonical)) return 80;
+    if (normalizedQuestion.includes(canonical) && normalizedLabel.includes(alias)) return 80;
+  }
+
+  const meaningful = words.filter((word) => word.length >= 3 || /^\d+$/.test(word));
+  const matches = meaningful.filter((word) => questionTokens.has(word)).length;
+  if (matches === meaningful.length && matches > 0) return 50 + matches;
+  return matches;
+}
+
+function requestedSystems(question) {
+  const systems = [];
+  if (/\bloinc\b/i.test(question)) systems.push("LOINC");
+  if (/\bicd(?:-?10)?\b/i.test(question)) systems.push("ICD-10");
+  if (/\bcpt\b/i.test(question)) systems.push("CPT");
+  if (/\bcvx\b/i.test(question)) systems.push("CVX");
+  if (/\b(?:rxnorm|rxcui)\b/i.test(question)) systems.push("RXNorm");
+  if (/\bsocial history\b/i.test(question)) systems.push("Social History");
+  return systems;
+}
+
+function systemMatches(record, systems) {
+  if (!systems.length) return true;
+  const names = [record.system, record.sheet].map((value) => normalizedWords(value).join(""));
+  return systems.some((system) => names.includes(normalizedWords(system).join("")));
+}
+
+/**
+ * Deterministically answer requests such as "list all LOINC codes for HIV".
+ * This scans every indexed spreadsheet row, so the result is not limited by
+ * semantic TOP_K or passage-size caps.
+ */
+export function buildStructuredCodeListAnswer(chunks, question) {
+  if (extractCodeTerms(question).length) return null;
+  const asksForCodes = /\b(?:code|codes|loinc|icd(?:-?10)?|cpt|cvx|rxnorm|rxcui)\b/i.test(question);
+  const listIntent = /\b(?:all|list|show|give|which|what|codes?\s+for)\b/i.test(question);
+  if (!asksForCodes || !listIntent) return null;
+
+  const systems = requestedSystems(question);
+  const allRecords = [];
+  const matchingChunks = [];
+  for (const chunk of chunks) {
+    if (!chunk.sheet) continue;
+    let chunkMatched = false;
+    for (const line of String(chunk.text || "").split(/\n+/)) {
+      const record = parseStructuredRow(line, chunk.sheet);
+      if (!record?.code || !systemMatches(record, systems)) continue;
+      allRecords.push({ record, chunk });
+      chunkMatched = true;
+    }
+    if (chunkMatched) matchingChunks.push(chunk);
+  }
+  if (!allRecords.length) return null;
+
+  const questionTokens = new Set(normalizedWords(question));
+  const labelMap = new Map();
+  for (const { record } of allRecords) {
+    const label = record.condition || record.category;
+    const key = normalizedWords(label).join(" ");
+    if (key && !labelMap.has(key)) labelMap.set(key, label);
+  }
+  const scoredLabels = [...labelMap.entries()]
+    .map(([key, label]) => ({ key, label, score: conditionScore(label, question, questionTokens) }))
+    .filter(({ score }) => score > 0);
+  const bestScore = Math.max(0, ...scoredLabels.map(({ score }) => score));
+  const selectedLabelKeys = new Set(scoredLabels.filter(({ score }) => score === bestScore).map(({ key }) => key));
+
+  // "All LOINC codes" is valid without a condition. Otherwise require a
+  // recognizable condition/category so an ordinary prose question does not
+  // accidentally dump the entire workbook.
+  if (!selectedLabelKeys.size && !(systems.length && /\ball\b/i.test(question))) return null;
+
+  const selected = allRecords.filter(({ record }) => {
+    const label = record.condition || record.category;
+    return !selectedLabelKeys.size || selectedLabelKeys.has(normalizedWords(label).join(" "));
+  });
+  const groups = new Map();
+  for (const { record } of selected) {
+    const system = record.system || record.sheet || "Codes";
+    if (!groups.has(system)) groups.set(system, new Set());
+    groups.get(system).add(record.code);
+  }
+  if (!groups.size) return null;
+
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const groupEntries = [...groups.entries()]
+    .map(([system, codes]) => [system, [...codes].sort(collator.compare)])
+    .sort(([a], [b]) => a.localeCompare(b));
+  const total = groupEntries.reduce((sum, [, codes]) => sum + codes.length, 0);
+  const subject = selectedLabelKeys.size
+    ? [...selectedLabelKeys].map((key) => labelMap.get(key)).join(" and ")
+    : "All indexed records";
+  const onlySystem = groupEntries.length === 1 ? groupEntries[0][0] : null;
+  const output = [
+    `${subject} — ${total.toLocaleString()} unique${onlySystem ? ` ${onlySystem}` : ""} code${total === 1 ? "" : "s"}`,
+  ];
+
+  for (const [system, codes] of groupEntries) {
+    output.push("", `${system} (${codes.length.toLocaleString()})`);
+    for (let i = 0; i < codes.length; i += 12) {
+      output.push(codes.slice(i, i + 12).join(", "));
+    }
+  }
+
+  const selectedChunkSet = new Set(selected.map(({ chunk }) => chunk));
+  return {
+    answer: output.join("\n"),
+    chunks: matchingChunks.filter((chunk) => selectedChunkSet.has(chunk)),
+    recordCount: selected.length,
+    uniqueCodeCount: total,
+  };
+}
+
 /**
  * Rank chunks with semantic similarity, lexical overlap, and literal code
  * matching. Literal matches survive the semantic threshold because sentence
@@ -182,6 +318,7 @@ export function rankChunks(chunks, queryVector, question, options = {}) {
     .match(/[a-z0-9][a-z0-9._-]{2,}/g)
     ?.filter((term) => !STOPWORDS.has(term)) || [];
   const codeTerms = extractCodeTerms(question);
+  const websiteIntent = /\b(?:website|webpage|web page|site|hubverse)\b/i.test(question);
 
   const ranked = chunks
     .map((chunk) => {
@@ -190,11 +327,12 @@ export function rankChunks(chunks, queryVector, question, options = {}) {
       const hits = terms.filter((term) => haystack.includes(term)).length;
       const lexicalBoost = terms.length ? 0.15 * (hits / terms.length) : 0;
       const exactCodeMatch = codeTerms.some((term) => containsLiteral(haystack, term));
+      const sourceBoost = websiteIntent && chunk.kind === "website" ? 0.2 : 0;
       return {
         chunk,
         cosine,
         exactCodeMatch,
-        score: cosine + lexicalBoost + (exactCodeMatch ? 1 : 0),
+        score: cosine + lexicalBoost + sourceBoost + (exactCodeMatch ? 1 : 0),
       };
     })
     .filter((result) => result.exactCodeMatch || result.cosine >= minScore)

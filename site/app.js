@@ -10,7 +10,12 @@
  *    asks Claude to compose an answer from the retrieved passages.
  */
 
-import { formatExactCodeResults, formatStructuredRows, rankChunks } from "./retrieval.js";
+import {
+  buildStructuredCodeListAnswer,
+  formatExactCodeResults,
+  formatStructuredRows,
+  rankChunks,
+} from "./retrieval.js";
 
 const CONFIG = window.FRONT_DESK || {};
 const TOP_K = 6;
@@ -267,14 +272,32 @@ if ("requestIdleCallback" in window) {
 /* ── Retrieval ────────────────────────────────────────────── */
 
 async function retrieve(question) {
-  const [idx] = await Promise.all([loadIndex(), loadEmbedder()]);
+  const idx = await loadIndex();
+  const structuredList = buildStructuredCodeListAnswer(idx.chunks, question);
+  if (structuredList) {
+    const results = structuredList.chunks.slice(0, TOP_K).map((chunk) => ({
+      chunk,
+      cosine: 1,
+      exactCodeMatch: false,
+      structuredListMatch: true,
+      score: 1,
+    }));
+    return {
+      results,
+      query: null,
+      codeTerms: [],
+      structuredListAnswer: structuredList.answer,
+    };
+  }
+
+  await loadEmbedder();
   const output = await embedder(question, { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
   const { results, codeTerms } = rankChunks(idx.chunks, query, question, {
     topK: TOP_K,
     minScore: MIN_SCORE,
   });
-  return { results, query, codeTerms };
+  return { results, query, codeTerms, structuredListAnswer: null };
 }
 
 /**
@@ -489,7 +512,7 @@ els.form.addEventListener("submit", async (event) => {
   const answerEl = entry.querySelector(".entry-answer");
 
   try {
-    const { results, query, codeTerms } = await retrieve(question);
+    const { results, query, codeTerms, structuredListAnswer } = await retrieve(question);
     const idx = await loadIndex();
 
     const confidence = results.length ? results[0].cosine : 0;
@@ -510,7 +533,13 @@ els.form.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (stored.key) {
+    if (structuredListAnswer) {
+      answerEl.textContent = structuredListAnswer;
+      const note = document.createElement("p");
+      note.className = "entry-note";
+      note.textContent = "Complete code list from every matching workbook row — sources below.";
+      entry.appendChild(note);
+    } else if (stored.key) {
       answerEl.textContent = "Composing an answer…";
       try {
         answerEl.textContent = await composeAnswer(question, results);

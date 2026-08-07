@@ -290,6 +290,7 @@ async function collectKnowledgeFolder(documents) {
       text,
       isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
       preparedChunks,
+      kind: preparedChunks ? "spreadsheet" : "document",
     });
     console.log(`Indexed ${rel}`);
   }
@@ -298,6 +299,7 @@ async function collectKnowledgeFolder(documents) {
 async function collectWebsites(documents, websites, report) {
   const BROWSER_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+  const visited = new Set();
 
   async function fetchWithTimeout(url, headers) {
     const controller = new AbortController();
@@ -309,15 +311,42 @@ async function collectWebsites(documents, websites, report) {
     }
   }
 
-  for (const entry of websites) {
-    const url = typeof entry === "string" ? entry : entry.url;
-    const customTitle = typeof entry === "object" ? entry.title : null;
-    if (!url) continue;
+  function canonicalUrl(value, base) {
+    try {
+      const url = new URL(value, base);
+      if (!/^https?:$/.test(url.protocol)) return null;
+      if (/\.(?:css|js|mjs|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|zip|gz|tar|mp4|mp3)$/i.test(url.pathname)) {
+        return null;
+      }
+      url.hash = "";
+      url.search = ""; // avoids duplicate tracking/filter URLs
+      return url.toString();
+    } catch {
+      return null;
+    }
+  }
 
+  function extractLinks(content, pageUrl) {
+    const links = [];
+    const patterns = [
+      /\bhref\s*=\s*["']([^"']+)["']/gi,
+      /\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g,
+    ];
+    for (const pattern of patterns) {
+      for (const match of content.matchAll(pattern)) {
+        const url = canonicalUrl(match[1].replace(/&amp;/g, "&"), pageUrl);
+        if (url) links.push(url);
+      }
+    }
+    return [...new Set(links)];
+  }
+
+  async function fetchWebsitePage(url, customTitle) {
     let text = null;
     let title = customTitle;
     let isMarkdown = false;
     let failReason = null;
+    let discoveredLinks = [];
 
     // Attempt 1: direct fetch with a browser user agent.
     try {
@@ -331,6 +360,7 @@ async function collectWebsites(documents, websites, report) {
         title ||= decodeURIComponent(basename(new URL(url).pathname));
       } else {
         const html = await res.text();
+        discoveredLinks = extractLinks(html, url);
         const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
         title ||= match ? stripHtml(match[1]).slice(0, 120) : null;
         text = stripHtml(html);
@@ -340,8 +370,7 @@ async function collectWebsites(documents, websites, report) {
     }
 
     // Attempt 2: if the page was blocked or is JavaScript-rendered (thin
-    // HTML), route through the free r.jina.ai reader, which renders the
-    // page and returns clean Markdown.
+    // HTML), route through the free r.jina.ai reader.
     if (!text || text.length < 200) {
       try {
         console.log(`  ${url} → thin/blocked (${failReason || (text ? text.length + " chars" : "no text")}), trying reader fallback…`);
@@ -351,6 +380,7 @@ async function collectWebsites(documents, websites, report) {
         if (md && md.trim().length >= 200) {
           text = md.trim();
           isMarkdown = true;
+          discoveredLinks.push(...extractLinks(md, url));
           const heading = md.match(/^Title:\s*(.+)$/m) || md.match(/^#\s+(.+)$/m);
           title ||= heading ? heading[1].trim().slice(0, 120) : null;
           failReason = null;
@@ -361,22 +391,57 @@ async function collectWebsites(documents, websites, report) {
     }
 
     if (!text || text.trim().length < 80) {
-      const reason = failReason || "no extractable text (JavaScript-only page?)";
-      console.warn(`Skipping website ${url}: ${reason}`);
-      report.websitesFailed.push({ url, reason });
-      continue;
+      return { error: failReason || "no extractable text (JavaScript-only page?)", links: discoveredLinks };
     }
+    return { text, title: title || url, isMarkdown, links: [...new Set(discoveredLinks)] };
+  }
 
-    const u = new URL(url);
-    documents.push({
-      source: (u.host + u.pathname).replace(/\/$/, ""),
-      title: title || url,
-      link: url,
-      text,
-      isMarkdown,
-    });
-    report.websitesOk.push(url);
-    console.log(`Fetched ${url} (${text.length} chars)`);
+  for (const entry of websites) {
+    const spec = typeof entry === "string" ? { url: entry } : entry;
+    const root = canonicalUrl(spec.url);
+    if (!root) continue;
+    const rootUrl = new URL(root);
+    const pathPrefix = spec.pathPrefix || (rootUrl.pathname.endsWith("/")
+      ? rootUrl.pathname
+      : rootUrl.pathname.replace(/[^/]+$/, ""));
+    const maxPages = spec.crawl ? Math.max(1, Math.min(Number(spec.maxPages) || 25, 100)) : 1;
+    const queue = [root];
+    let fetchedCount = 0;
+
+    while (queue.length && fetchedCount < maxPages) {
+      const url = queue.shift();
+      if (visited.has(url)) continue;
+      visited.add(url);
+
+      const page = await fetchWebsitePage(url, url === root ? spec.title : null);
+      if (page.error) {
+        console.warn(`Skipping website ${url}: ${page.error}`);
+        report.websitesFailed.push({ url, reason: page.error });
+        continue;
+      }
+
+      const current = new URL(url);
+      documents.push({
+        source: (current.host + current.pathname).replace(/\/$/, ""),
+        title: page.title,
+        link: url,
+        text: page.text,
+        isMarkdown: page.isMarkdown,
+        kind: "website",
+      });
+      report.websitesOk.push(url);
+      fetchedCount++;
+      console.log(`Fetched ${url} (${page.text.length} chars)`);
+
+      if (spec.crawl) {
+        for (const link of page.links) {
+          const candidate = new URL(link);
+          if (candidate.origin !== rootUrl.origin || !candidate.pathname.startsWith(pathPrefix)) continue;
+          if (!visited.has(link) && !queue.includes(link)) queue.push(link);
+        }
+      }
+    }
+    if (spec.crawl) console.log(`Crawled ${fetchedCount} page(s) from ${root}`);
   }
 }
 
@@ -444,6 +509,7 @@ async function collectRepositories(documents, repositories, report) {
           text,
           isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
           preparedChunks,
+          kind: "repository",
         });
         count++;
       }
@@ -504,6 +570,7 @@ async function main() {
         link: doc.link,
         part: i,
         text: piece.text,
+        kind: doc.kind || "document",
         ...(piece.sheet ? { sheet: piece.sheet } : {}),
       });
     }

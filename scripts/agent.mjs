@@ -14,7 +14,7 @@
  */
 
 import { env, pipeline } from "@xenova/transformers";
-import { formatExactCodeResults, rankChunks } from "../site/retrieval.js";
+import { buildStructuredCodeListAnswer, formatExactCodeResults, rankChunks } from "../site/retrieval.js";
 
 env.cacheDir = ".model-cache";
 
@@ -86,16 +86,30 @@ async function main() {
   }
   const index = await res.json();
 
-  // 2–3. Embed the question and retrieve.
-  console.log(`Embedding question with ${index.model}…`);
-  const embed = await pipeline("feature-extraction", index.model, { quantized: true });
-  const output = await embed(question.slice(0, 2000), { pooling: "mean", normalize: true });
-  const query = Array.from(output.data);
-
-  const { results, codeTerms } = rankChunks(index.chunks, query, question, {
-    topK: TOP_K,
-    minScore: MIN_SCORE,
-  });
+  // 2–3. Answer full-list spreadsheet requests deterministically; otherwise
+  // embed the question and use hybrid retrieval.
+  const structuredList = buildStructuredCodeListAnswer(index.chunks, question);
+  let results;
+  let codeTerms;
+  if (structuredList) {
+    results = structuredList.chunks.slice(0, TOP_K).map((chunk) => ({
+      chunk,
+      cosine: 1,
+      exactCodeMatch: false,
+      structuredListMatch: true,
+      score: 1,
+    }));
+    codeTerms = [];
+  } else {
+    console.log(`Embedding question with ${index.model}…`);
+    const embed = await pipeline("feature-extraction", index.model, { quantized: true });
+    const output = await embed(question.slice(0, 2000), { pooling: "mean", normalize: true });
+    const query = Array.from(output.data);
+    ({ results, codeTerms } = rankChunks(index.chunks, query, question, {
+      topK: TOP_K,
+      minScore: MIN_SCORE,
+    }));
+  }
 
   const confidence = results.length ? results[0].cosine : 0;
   const hasExactCodeMatch = results.some((result) => result.exactCodeMatch);
@@ -123,8 +137,8 @@ async function main() {
     .map((r, i) => `[${i + 1}] (${r.chunk.source})\n${r.chunk.text}`)
     .join("\n\n---\n\n");
 
-  let answer = null;
-  try {
+  let answer = structuredList?.answer || null;
+  if (!answer) try {
     const modelRes = await fetch("https://models.github.ai/inference/chat/completions", {
       method: "POST",
       headers: {
@@ -157,7 +171,8 @@ async function main() {
   }
 
   // 5. Post the comment.
-  const fallbackPassage = formatExactCodeResults(results, codeTerms)
+  const fallbackPassage = structuredList?.answer
+    || formatExactCodeResults(results, codeTerms)
     || results[0].chunk.text.slice(0, 900);
   const body = answer
     ? `🛎️ ${answer}\n\n---\n**Sources**\n${sourceList}\n\n<sub>Answered automatically by the Front Desk agent from this repo's reference material. A human can correct anything above.</sub>`
