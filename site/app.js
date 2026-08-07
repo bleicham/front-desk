@@ -25,6 +25,7 @@ const els = {
   status: document.getElementById("status"),
   ledger: document.getElementById("ledger"),
   bell: document.getElementById("bell"),
+  bellButton: document.getElementById("bell-button"),
   indexMeta: document.getElementById("index-meta"),
   settingsToggle: document.getElementById("settings-toggle"),
   settings: document.getElementById("settings"),
@@ -34,12 +35,68 @@ const els = {
   clearSettings: document.getElementById("clear-settings"),
 };
 
+/* ── The bell ─────────────────────────────────────────────── */
+/* A real desk-bell chime, synthesized with the Web Audio API —
+   no sound files. Clicking the bell rings it and invites a question. */
+
+let audioCtx = null;
+
+function ringBell({ soft = false } = {}) {
+  try {
+    audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+
+    const now = audioCtx.currentTime;
+    const master = audioCtx.createGain();
+    master.gain.value = soft ? 0.10 : 0.22;
+    master.connect(audioCtx.destination);
+
+    // A brass desk bell is a bright fundamental plus inharmonic overtones,
+    // each decaying at its own rate — higher partials die out faster.
+    const partials = [
+      { freq: 1245, gain: 1.0, decay: 1.6 },
+      { freq: 1875, gain: 0.55, decay: 1.1 },
+      { freq: 2510, gain: 0.30, decay: 0.7 },
+      { freq: 3320, gain: 0.15, decay: 0.4 },
+    ];
+
+    for (const p of partials) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = p.freq;
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(p.gain, now + 0.004); // sharp strike
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + p.decay);
+      osc.connect(gain).connect(master);
+      osc.start(now);
+      osc.stop(now + p.decay + 0.05);
+    }
+  } catch {
+    /* audio unavailable — the bell stays decorative */
+  }
+}
+
+function shakeBell() {
+  els.bell.classList.add("ringing");
+  setTimeout(() => {
+    if (!busy) els.bell.classList.remove("ringing");
+  }, 700);
+}
+
 /* ── Branding ─────────────────────────────────────────────── */
 
 els.orgName.textContent = CONFIG.orgName || "";
 els.tagline.textContent = CONFIG.tagline || "How can we help?";
 els.subtitle.textContent = CONFIG.subtitle || "";
 document.title = `Front Desk — ${CONFIG.orgName || "Ask us anything"}`;
+
+els.bellButton.addEventListener("click", () => {
+  ringBell();
+  shakeBell();
+  els.question.focus();
+  els.question.scrollIntoView({ behavior: "smooth", block: "center" });
+});
 
 for (const suggestion of CONFIG.suggestions || []) {
   const chip = document.createElement("button");
@@ -257,6 +314,13 @@ els.form.addEventListener("submit", async (event) => {
   els.bell.classList.add("ringing");
   els.question.value = "";
 
+  // Creating/resuming the audio context during this click/submit gesture
+  // lets the soft "answer ready" ding play later without being blocked.
+  try {
+    audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch { /* no audio — fine */ }
+
   const entry = renderEntry(question);
   const answerEl = entry.querySelector(".entry-answer");
 
@@ -291,6 +355,7 @@ els.form.addEventListener("submit", async (event) => {
     }
 
     renderSources(entry, idx, results);
+    ringBell({ soft: true }); // answer's ready — a gentle ding
   } catch (err) {
     answerEl.className = "entry-answer empty-result";
     answerEl.textContent = `Something went wrong: ${err.message}`;

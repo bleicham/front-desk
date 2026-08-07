@@ -55,7 +55,21 @@ body {
   gap: 10px;
 }
 
-.bell { flex: none; transform-origin: 50% 90%; }
+.bell-button {
+  background: none;
+  border: none;
+  padding: 2px;
+  margin: 0;
+  line-height: 0;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.bell-button:hover .bell { transform: rotate(-8deg); }
+.bell-button:active .bell { transform: translateY(1px); }
+.bell-button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+.bell { flex: none; transform-origin: 50% 90%; transition: transform 0.15s ease; }
 
 .bell.ringing { animation: ding 0.7s ease-in-out infinite; }
 
@@ -423,6 +437,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .bell.ringing { animation: none; }
+  .bell, .bell-button:hover .bell { transition: none; transform: none; }
   .source-card:hover { transform: none; }
   html { scroll-behavior: auto; }
 }
