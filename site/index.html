@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Front Desk</title>
+  <meta name="description" content="Ask a question and get answers sourced from our documentation." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=Albert+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 6a2 2 0 0 1 2 2v1.1A9 9 0 0 1 25 18v2H7v-2a9 9 0 0 1 7-8.9V8a2 2 0 0 1 2-2Z' fill='%23A9853C'/%3E%3Crect x='5' y='22' width='22' height='3' rx='1.5' fill='%232E4B42'/%3E%3C/svg%3E" />
+  <script>
+    // ── Customize your Front Desk here ─────────────────────────────
+    window.FRONT_DESK = {
+      orgName: "Your Organization",          // shown in the header eyebrow
+      tagline: "How can we help?",           // hero heading
+      subtitle: "Ask anything about our docs, policies, and guides. Answers come straight from the files in this repository.",
+      suggestions: [                          // example questions shown as chips
+        "How do I get started?",
+        "Who do I contact for support?",
+        "Where are the policies?"
+      ]
+    };
+  </script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand">
+        <svg class="bell" id="bell" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+          <path d="M16 6a2 2 0 0 1 2 2v1.1A9 9 0 0 1 25 18v2H7v-2a9 9 0 0 1 7-8.9V8a2 2 0 0 1 2-2Z" fill="var(--brass)"/>
+          <rect x="5" y="22" width="22" height="3" rx="1.5" fill="var(--spruce)"/>
+        </svg>
+        <span class="wordmark">Front Desk</span>
+      </div>
+      <span class="eyebrow" id="org-name"></span>
+    </div>
+    <div class="rule-double"></div>
+  </header>
+
+  <main class="desk">
+    <section class="hero">
+      <h1 id="tagline"></h1>
+      <p class="subtitle" id="subtitle"></p>
+
+      <form class="register" id="ask-form">
+        <input
+          type="text"
+          id="question"
+          class="register-line"
+          placeholder="Type your question…"
+          autocomplete="off"
+          aria-label="Your question"
+        />
+        <button type="submit" class="ask-button" id="ask-button">Ask</button>
+      </form>
+
+      <div class="chips" id="chips"></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="ledger" id="ledger" aria-live="polite"></section>
+  </main>
+
+  <footer class="colophon">
+    <div class="rule-double"></div>
+    <p id="footer-note">Answers are drawn from the files in this repository.</p>
+    <p class="colophon-meta">
+      <span id="index-meta"></span>
+      <button type="button" class="settings-link" id="settings-toggle">Answer settings</button>
+    </p>
+    <div class="settings" id="settings" hidden>
+      <h2>Answer synthesis <span class="optional-tag">optional</span></h2>
+      <p>
+        Out of the box, the Front Desk finds and shows the most relevant passages
+        from the repository — completely free, nothing leaves your browser.
+        Add an Anthropic API key to have Claude write a composed answer from
+        those passages. The key is stored only in <em>your</em> browser
+        (localStorage) and is sent only to Anthropic.
+      </p>
+      <div class="settings-row">
+        <label for="api-key">Anthropic API key</label>
+        <input type="password" id="api-key" placeholder="sk-ant-…" autocomplete="off" />
+      </div>
+      <div class="settings-row">
+        <label for="api-model">Model</label>
+        <input type="text" id="api-model" value="claude-haiku-4-5" />
+      </div>
+      <div class="settings-actions">
+        <button type="button" id="save-settings">Save</button>
+        <button type="button" class="ghost" id="clear-settings">Remove key</button>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
