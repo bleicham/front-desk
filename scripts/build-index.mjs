@@ -103,11 +103,52 @@ async function extractText(path) {
   if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
     const mod = await import("xlsx");
     const XLSX = mod.default || mod;
-    const wb = XLSX.read(await readFile(path), { type: "buffer" });
+    const wb = XLSX.read(await readFile(path), { type: "buffer", cellDates: true });
     const parts = [];
+
     for (const name of wb.SheetNames) {
-      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]).trim();
-      if (csv) parts.push(`## Sheet: ${name}\n${csv}`);
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], {
+        header: 1,       // arrays, so we can find the header row ourselves
+        defval: "",
+        raw: false,      // formatted strings (dates, numbers) not raw serials
+        blankrows: false,
+      });
+      if (!rows.length) continue;
+
+      const cellStr = (v) => String(v ?? "").trim();
+      const filled = (row) => row.filter((c) => cellStr(c) !== "").length;
+
+      // Header row = first row where at least 2 cells are filled.
+      // Rows above it (titles, notes) are kept as plain lines.
+      let headerIdx = rows.findIndex((row) => filled(row) >= 2);
+      const lines = [];
+
+      if (headerIdx === -1) {
+        // Single-column sheet (notes, lists) — plain lines.
+        for (const row of rows) {
+          const t = row.map(cellStr).filter(Boolean).join(" ");
+          if (t) lines.push(t);
+        }
+      } else {
+        for (let i = 0; i < headerIdx; i++) {
+          const t = rows[i].map(cellStr).filter(Boolean).join(" ");
+          if (t) lines.push(t);
+        }
+        const headers = rows[headerIdx].map(cellStr);
+        // Every data row becomes self-describing: "Header: value | Header: value"
+        for (let i = headerIdx + 1; i < rows.length; i++) {
+          const pairs = [];
+          rows[i].forEach((cell, c) => {
+            const v = cellStr(cell);
+            if (!v) return;
+            const h = headers[c] || `Col${c + 1}`;
+            pairs.push(`${h}: ${v}`);
+          });
+          if (pairs.length) lines.push(pairs.join(" | "));
+        }
+      }
+
+      if (lines.length) parts.push(`## Sheet: ${name}\n${lines.join("\n")}`);
     }
     return parts.join("\n\n");
   }

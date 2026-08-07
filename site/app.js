@@ -312,7 +312,7 @@ async function composeExtractiveAnswer(queryVec, results) {
     for (const line of r.chunk.text.split(/\n+/)) {
       const t = line.trim();
       if (!t) continue;
-      const isTableRow = (t.match(/\|/g) || []).length >= 2 || t.split(",").length >= 4;
+      const isTableRow = (t.match(/ \| /g) || []).length >= 1 || (t.match(/\|/g) || []).length >= 2 || t.split(",").length >= 4;
       if (isTableRow) {
         units.push({ text: t, row: true }); // table/CSV row — keep intact
       } else {
@@ -479,6 +479,31 @@ function renderSources(entry, idx, results) {
   entry.appendChild(wrap);
 }
 
+/* ── Debug mode (?debug in the URL) ───────────────────────── */
+
+const DEBUG = new URLSearchParams(location.search).has("debug");
+
+function renderDebug(entry, question, query, idx) {
+  // Raw top-10 by hybrid score, regardless of threshold, plus term-hit info.
+  const STOPWORDS = new Set(["the","a","an","is","are","was","were","do","does","how","what","who","where","when","why","can","i","we","you","to","of","in","on","for","and","or","my","our","it","this","that"]);
+  const terms = question.toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g)?.filter((t) => !STOPWORDS.has(t)) || [];
+
+  const scored = idx.chunks.map((chunk) => {
+    const cosine = dot(query, chunk.embedding);
+    const haystack = (chunk.text + " " + chunk.title).toLowerCase();
+    const hits = terms.filter((t) => haystack.includes(t));
+    return { chunk, cosine, hits };
+  }).sort((a, b) => b.cosine - a.cosine).slice(0, 10);
+
+  const box = document.createElement("div");
+  box.className = "debug-box";
+  box.innerHTML = `<p class="debug-title">DEBUG — query terms: [${terms.join(", ")}] — top 10 raw matches (threshold ${MIN_SCORE}, low-confidence below 0.32):</p>` +
+    scored.map((r, i) =>
+      `<div class="debug-row"><strong>#${i + 1}</strong> cos=${r.cosine.toFixed(3)} hits=[${r.hits.join(",")}] — <code>${escapeHtml(r.chunk.source)}</code> (part ${r.chunk.part})<br>${escapeHtml(r.chunk.text.slice(0, 220))}…</div>`
+    ).join("");
+  entry.appendChild(box);
+}
+
 /* ── Ask flow ─────────────────────────────────────────────── */
 
 let busy = false;
@@ -521,6 +546,7 @@ els.form.addEventListener("submit", async (event) => {
         renderSources(entry, idx, results);
       }
       addFeedback(entry, question, "(no confident answer)");
+      if (DEBUG) renderDebug(entry, question, query, idx);
       return;
     }
 
@@ -553,6 +579,7 @@ els.form.addEventListener("submit", async (event) => {
 
     renderSources(entry, idx, results);
     addFeedback(entry, question, answerEl.textContent);
+    if (DEBUG) renderDebug(entry, question, query, idx);
     ringBell({ soft: true }); // answer's ready — a gentle ding
   } catch (err) {
     answerEl.className = "entry-answer empty-result";

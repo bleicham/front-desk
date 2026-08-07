@@ -329,6 +329,22 @@ body {
   margin: 8px 0 0;
 }
 
+.debug-box {
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: #1e2b26;
+  color: #cfe0d6;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.debug-title { color: #e9c46a; margin: 0 0 8px; }
+.debug-row { margin: 0 0 10px; }
+.debug-row code { color: #8fd3b6; }
+
 .feedback-row {
   font-family: var(--mono);
   font-size: 0.7rem;
