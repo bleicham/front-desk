@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly refresh (Mondays 06:00 UTC) so websites & external repos stay current
 
 permissions:
   contents: read
@@ -35,8 +37,10 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build search index from /knowledge
+      - name: Build search index (knowledge folder + external sources)
         run: npm run build
+        env:
+          REPOS_TOKEN: ${{ secrets.REPOS_TOKEN }}
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v3

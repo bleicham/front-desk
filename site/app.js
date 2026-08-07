@@ -254,9 +254,11 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function sourceUrl(idx, source) {
+function sourceUrl(idx, chunk) {
+  if (chunk.link) return chunk.link; // websites & external repos carry their own URL
+  if (/^https?:\/\//i.test(chunk.source)) return chunk.source;
   if (!idx.repo) return null;
-  return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${source}`;
+  return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
 function renderEntry(question) {
@@ -281,7 +283,7 @@ function renderSources(entry, idx, results) {
     if (!seen.has(r.chunk.source)) seen.set(r.chunk.source, r);
   }
   for (const r of seen.values()) {
-    const url = sourceUrl(idx, r.chunk.source);
+    const url = sourceUrl(idx, r.chunk);
     const card = document.createElement(url ? "a" : "div");
     card.className = "source-card";
     if (url) {

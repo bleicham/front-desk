@@ -60,6 +60,39 @@ The site rebuilds and redeploys itself in a couple of minutes.
 Supported formats: `.md` `.txt` `.pdf` `.docx` `.html` `.csv` `.tsv` `.json`
 `.yml` `.yaml` `.rst` `.org` `.log` — files over 10 MB are skipped.
 
+## Websites and other repos as sources
+
+Beyond dropping files into `knowledge/`, you can pull in external material by
+editing `sources.yml` at the repo root:
+
+```yaml
+websites:
+  - https://example.com/handbook
+  - url: https://example.com/policies/travel
+    title: Travel Policy
+
+repositories:
+  - my-org/engineering-handbook
+  - repo: my-org/api-service
+    include:
+      - docs/
+      - README.md
+```
+
+**Websites** are fetched page-by-page (list each URL you want; direct PDF
+links work too) and re-fetched on every build. The workflow also runs on a
+weekly schedule, so linked pages stay current even when nobody pushes.
+
+**Repositories** are shallow-cloned at build time and every supported doc
+file in them is indexed (use `include`/`exclude` path prefixes to keep big
+repos focused). Public repos need nothing; for private repos in your org,
+create a fine-grained personal access token with read-only Contents access to
+those repos and save it as an Actions secret named `REPOS_TOKEN`
+(**Settings → Secrets and variables → Actions → New repository secret**).
+
+Source cards on the site link to the live web page or the file in its home
+repo, so answers always point back to the original.
+
 ## Optional: full written answers with Claude
 
 Out of the box the Front Desk shows the best matching passages (extractive

@@ -1,0 +1,37 @@
+# ── Front Desk external sources ─────────────────────────────────
+# Everything listed here gets indexed alongside the /knowledge folder
+# on every build. Uncomment and edit the examples below.
+#
+# Websites are re-fetched on every run (including the weekly scheduled
+# refresh), so linked pages stay reasonably current.
+
+websites:
+  - url: https://hubverse.io/
+    title: Hubverse
+  # Plain URL — one entry per page you want indexed:
+  # - https://example.com/handbook
+  # - https://example.com/faq
+  #
+  # Or with a custom display title:
+  # - url: https://example.com/policies/travel
+  #   title: Travel Policy
+  #
+  # Direct links to PDFs work too:
+  # - https://example.com/files/benefits-guide.pdf
+
+repositories:
+  # Public repo — indexes every supported file (md, txt, pdf, docx, html…):
+  # - my-org/engineering-handbook
+  #
+  # Limit to certain paths (recommended for big repos).
+  # `include`/`exclude` take path prefixes or *.ext patterns:
+  # - repo: my-org/api-service
+  #   include:
+  #     - docs/
+  #     - README.md
+  #   exclude:
+  #     - docs/archive/
+  #
+  # Private repos in your org work too — create a fine-grained PAT with
+  # read access to those repos and save it as a repository secret named
+  # REPOS_TOKEN (Settings → Secrets and variables → Actions).
