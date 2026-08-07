@@ -74,6 +74,10 @@ async function main() {
     console.log("Empty issue — nothing to answer.");
     return;
   }
+  if (/^\[front desk feedback\]/i.test(ISSUE_TITLE.trim())) {
+    console.log("Feedback issue — leaving it for a human.");
+    return;
+  }
 
   // 1. Load the deployed index.
   const res = await fetch(`${PAGES_URL}/index.json`, { cache: "no-cache" });
@@ -99,11 +103,12 @@ async function main() {
     .slice(0, TOP_K)
     .filter((r) => r.score >= MIN_SCORE);
 
-  if (results.length === 0) {
+  const confidence = results.length ? results[0].score : 0;
+  if (results.length === 0 || confidence < 0.32) {
     await postComment(
-      "🛎️ Thanks for your question! I searched our reference material but couldn't " +
-      "find anything relevant. A maintainer will take a look — or try rephrasing, " +
-      "or ask on the [Front Desk site](" + PAGES_URL + ")."
+      "🛎️ Thanks for your question! I searched our reference material but didn't " +
+      "find a confident answer — rather than guess, I'll leave this for a maintainer. " +
+      "You can also try rephrasing, or ask on the [Front Desk site](" + PAGES_URL + ")."
     );
     return;
   }
@@ -142,6 +147,7 @@ async function main() {
               "Answer the visitor's question using ONLY the numbered reference passages. " +
               "Cite passages inline like [1]. If the passages don't fully answer it, say " +
               "what you did find and note that a maintainer can add more detail. " +
+              "If you are not sure, say so explicitly rather than guessing. " +
               "Be warm, concise, and professional. Format for a GitHub comment (Markdown).",
           },
           { role: "user", content: `Reference passages:\n\n${context}\n\nQuestion: ${question}` },

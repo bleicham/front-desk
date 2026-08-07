@@ -275,11 +275,26 @@ async function retrieve(question) {
   const output = await embedder(question, { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
 
+  // Hybrid scoring: semantic similarity plus a boost for exact keyword
+  // hits — embeddings are weak on rare terms like acronyms, product
+  // names, and codes, and this compensates.
+  const STOPWORDS = new Set(["the","a","an","is","are","was","were","do","does","how","what","who","where","when","why","can","i","we","you","to","of","in","on","for","and","or","my","our","it","this","that"]);
+  const terms = question.toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g)?.filter((t) => !STOPWORDS.has(t)) || [];
+
   const results = idx.chunks
-    .map((chunk) => ({ chunk, score: dot(query, chunk.embedding) }))
+    .map((chunk) => {
+      const cosine = dot(query, chunk.embedding);
+      let boost = 0;
+      if (terms.length) {
+        const haystack = (chunk.text + " " + chunk.title).toLowerCase();
+        const hits = terms.filter((t) => haystack.includes(t)).length;
+        boost = 0.15 * (hits / terms.length);
+      }
+      return { chunk, cosine, score: cosine + boost };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_K)
-    .filter((r) => r.score >= MIN_SCORE);
+    .filter((r) => r.cosine >= MIN_SCORE);
 
   return { results, query };
 }
@@ -376,6 +391,20 @@ function sourceUrl(idx, chunk) {
   return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
+function addFeedback(entry, question, answer) {
+  const idx = index;
+  if (!idx || !idx.repo) return;
+  const row = document.createElement("p");
+  row.className = "feedback-row";
+  const title = encodeURIComponent(`[Front Desk feedback] ${question.slice(0, 80)}`);
+  const body = encodeURIComponent(
+    `**Question asked:**\n${question}\n\n**Answer shown:**\n${answer.slice(0, 1000)}\n\n**What was wrong or missing:**\n(please describe)`
+  );
+  row.innerHTML =
+    `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a> so we can fix the source material.`;
+  entry.appendChild(row);
+}
+
 function renderEntry(question) {
   const entry = document.createElement("article");
   entry.className = "entry";
@@ -449,10 +478,20 @@ els.form.addEventListener("submit", async (event) => {
     const { results, query } = await retrieve(question);
     const idx = await loadIndex();
 
-    if (results.length === 0) {
+    const confidence = results.length ? results[0].cosine : 0;
+
+    if (results.length === 0 || confidence < 0.32) {
       answerEl.className = "entry-answer empty-result";
       answerEl.textContent =
-        "I couldn't find anything about that in our files. Try rephrasing, or check whether the topic has been added to the knowledge folder yet.";
+        "I don't have a confident answer for that in our files — rather than guess, I'll say so. Try rephrasing, or this topic may need to be added to the knowledge folder.";
+      if (results.length > 0) {
+        const note = document.createElement("p");
+        note.className = "entry-note";
+        note.textContent = "The closest material I found is below, in case it helps:";
+        entry.appendChild(note);
+        renderSources(entry, idx, results);
+      }
+      addFeedback(entry, question, "(no confident answer)");
       return;
     }
 
@@ -476,7 +515,15 @@ els.form.addEventListener("submit", async (event) => {
       entry.appendChild(note);
     }
 
+    if (confidence < 0.45) {
+      const caution = document.createElement("p");
+      caution.className = "entry-note";
+      caution.textContent = "Heads up: this match wasn't strong, so double-check against the sources below.";
+      entry.appendChild(caution);
+    }
+
     renderSources(entry, idx, results);
+    addFeedback(entry, question, answerEl.textContent);
     ringBell({ soft: true }); // answer's ready — a gentle ding
   } catch (err) {
     answerEl.className = "entry-answer empty-result";

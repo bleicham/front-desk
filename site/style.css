@@ -329,6 +329,15 @@ body {
   margin: 8px 0 0;
 }
 
+.feedback-row {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin: 14px 0 0;
+}
+
+.feedback-row a { color: var(--brass); }
+
 .empty-result {
   color: var(--muted);
   font-style: italic;
