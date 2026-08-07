@@ -103,52 +103,11 @@ async function extractText(path) {
   if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
     const mod = await import("xlsx");
     const XLSX = mod.default || mod;
-    const wb = XLSX.read(await readFile(path), { type: "buffer", cellDates: true });
+    const wb = XLSX.read(await readFile(path), { type: "buffer" });
     const parts = [];
-
     for (const name of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], {
-        header: 1,       // arrays, so we can find the header row ourselves
-        defval: "",
-        raw: false,      // formatted strings (dates, numbers) not raw serials
-        blankrows: false,
-      });
-      if (!rows.length) continue;
-
-      const cellStr = (v) => String(v ?? "").trim();
-      const filled = (row) => row.filter((c) => cellStr(c) !== "").length;
-
-      // Header row = first row where at least 2 cells are filled.
-      // Rows above it (titles, notes) are kept as plain lines.
-      let headerIdx = rows.findIndex((row) => filled(row) >= 2);
-      const lines = [];
-
-      if (headerIdx === -1) {
-        // Single-column sheet (notes, lists) — plain lines.
-        for (const row of rows) {
-          const t = row.map(cellStr).filter(Boolean).join(" ");
-          if (t) lines.push(t);
-        }
-      } else {
-        for (let i = 0; i < headerIdx; i++) {
-          const t = rows[i].map(cellStr).filter(Boolean).join(" ");
-          if (t) lines.push(t);
-        }
-        const headers = rows[headerIdx].map(cellStr);
-        // Every data row becomes self-describing: "Header: value | Header: value"
-        for (let i = headerIdx + 1; i < rows.length; i++) {
-          const pairs = [];
-          rows[i].forEach((cell, c) => {
-            const v = cellStr(cell);
-            if (!v) return;
-            const h = headers[c] || `Col${c + 1}`;
-            pairs.push(`${h}: ${v}`);
-          });
-          if (pairs.length) lines.push(pairs.join(" | "));
-        }
-      }
-
-      if (lines.length) parts.push(`## Sheet: ${name}\n${lines.join("\n")}`);
+      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]).trim();
+      if (csv) parts.push(`## Sheet: ${name}\n${csv}`);
     }
     return parts.join("\n\n");
   }
@@ -173,6 +132,66 @@ async function extractText(path) {
   }
 
   return null; // unsupported type — skipped
+}
+
+function isSpreadsheet(path) {
+  return /\.(xlsx|xls|xlsm)$/i.test(path);
+}
+
+/**
+ * Turn workbook rows into row-safe chunks. Every chunk repeats its sheet name
+ * and column labels so rows never lose their schema when they are embedded.
+ */
+async function extractWorkbookChunks(path) {
+  const mod = await import("xlsx");
+  const XLSX = mod.default || mod;
+  const wb = XLSX.read(await readFile(path), { type: "buffer" });
+  const chunks = [];
+  const workbookTitle = basename(path).replace(/\.[^.]+$/, "");
+
+  for (const sheetName of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
+      header: 1,
+      raw: false,
+      defval: "",
+      blankrows: false,
+    });
+    if (!rows.length) continue;
+
+    const width = Math.max(...rows.map((row) => row.length));
+    const headers = Array.from({ length: width }, (_, i) => {
+      const value = String(rows[0]?.[i] ?? "").replace(/\s+/g, " ").trim();
+      return value || `Column ${i + 1}`;
+    });
+    const prefix = `## Sheet: ${sheetName}\nColumns: ${headers.join(" | ")}`;
+    let lines = [];
+
+    const flush = () => {
+      if (!lines.length) return;
+      chunks.push({
+        sheet: sheetName,
+        title: `${workbookTitle} — ${sheetName}`,
+        text: `${prefix}\n${lines.join("\n")}`,
+      });
+      lines = [];
+    };
+
+    for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+      const fields = headers.flatMap((header, columnIndex) => {
+        const value = String(rows[rowIndex]?.[columnIndex] ?? "").replace(/\s+/g, " ").trim();
+        return value ? [`${header}: ${value}`] : [];
+      });
+      if (!fields.length) continue;
+      const rowText = `Row ${rowIndex + 1} | ${fields.join(" | ")}`;
+      const candidate = `${prefix}\n${[...lines, rowText].join("\n")}`;
+      if (lines.length && candidate.length > CHUNK_CHARS) flush();
+      lines.push(rowText);
+      if (`${prefix}\n${rowText}`.length > CHUNK_CHARS) flush();
+    }
+    flush();
+  }
+
+  return chunks;
 }
 
 /* ---------------------------------------------------------------- */
@@ -250,8 +269,14 @@ async function collectKnowledgeFolder(documents) {
       continue;
     }
     let text;
+    let preparedChunks = null;
     try {
-      text = await extractText(file);
+      if (isSpreadsheet(file)) {
+        preparedChunks = await extractWorkbookChunks(file);
+        text = preparedChunks.map((chunk) => chunk.text).join("\n\n");
+      } else {
+        text = await extractText(file);
+      }
     } catch (err) {
       console.warn(`Skipping ${file}: ${err.message}`);
       continue;
@@ -264,6 +289,7 @@ async function collectKnowledgeFolder(documents) {
       link: null,
       text,
       isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
+      preparedChunks,
     });
     console.log(`Indexed ${rel}`);
   }
@@ -399,8 +425,14 @@ async function collectRepositories(documents, repositories, report) {
         const info = await stat(file);
         if (info.size > MAX_FILE_BYTES) continue;
         let text;
+        let preparedChunks = null;
         try {
-          text = await extractText(file);
+          if (isSpreadsheet(file)) {
+            preparedChunks = await extractWorkbookChunks(file);
+            text = preparedChunks.map((chunk) => chunk.text).join("\n\n");
+          } else {
+            text = await extractText(file);
+          }
         } catch {
           continue;
         }
@@ -411,6 +443,7 @@ async function collectRepositories(documents, repositories, report) {
           link: `https://github.com/${spec.repo}/blob/${branch}/${repoPath}`,
           text,
           isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
+          preparedChunks,
         });
         count++;
       }
@@ -462,14 +495,16 @@ async function main() {
   // Chunk every document.
   const chunks = [];
   for (const doc of documents) {
-    const pieces = chunkText(doc.text, doc.isMarkdown);
+    const pieces = doc.preparedChunks || chunkText(doc.text, doc.isMarkdown).map((text) => ({ text }));
     for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
       chunks.push({
         source: doc.source,
-        title: doc.title,
+        title: piece.title || doc.title,
         link: doc.link,
         part: i,
-        text: pieces[i],
+        text: piece.text,
+        ...(piece.sheet ? { sheet: piece.sheet } : {}),
       });
     }
   }

@@ -10,6 +10,8 @@
  *    asks Claude to compose an answer from the retrieved passages.
  */
 
+import { formatExactCodeResults, formatStructuredRows, rankChunks } from "./retrieval.js";
+
 const CONFIG = window.FRONT_DESK || {};
 const TOP_K = 6;
 const MIN_SCORE = 0.25;
@@ -264,39 +266,15 @@ if ("requestIdleCallback" in window) {
 
 /* ── Retrieval ────────────────────────────────────────────── */
 
-function dot(a, b) {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
-  return sum; // vectors are normalized, so dot product = cosine similarity
-}
-
 async function retrieve(question) {
   const [idx] = await Promise.all([loadIndex(), loadEmbedder()]);
   const output = await embedder(question, { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
-
-  // Hybrid scoring: semantic similarity plus a boost for exact keyword
-  // hits — embeddings are weak on rare terms like acronyms, product
-  // names, and codes, and this compensates.
-  const STOPWORDS = new Set(["the","a","an","is","are","was","were","do","does","how","what","who","where","when","why","can","i","we","you","to","of","in","on","for","and","or","my","our","it","this","that"]);
-  const terms = question.toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g)?.filter((t) => !STOPWORDS.has(t)) || [];
-
-  const results = idx.chunks
-    .map((chunk) => {
-      const cosine = dot(query, chunk.embedding);
-      let boost = 0;
-      if (terms.length) {
-        const haystack = (chunk.text + " " + chunk.title).toLowerCase();
-        const hits = terms.filter((t) => haystack.includes(t)).length;
-        boost = 0.15 * (hits / terms.length);
-      }
-      return { chunk, cosine, score: cosine + boost };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_K)
-    .filter((r) => r.cosine >= MIN_SCORE);
-
-  return { results, query };
+  const { results, codeTerms } = rankChunks(idx.chunks, query, question, {
+    topK: TOP_K,
+    minScore: MIN_SCORE,
+  });
+  return { results, query, codeTerms };
 }
 
 /**
@@ -312,7 +290,7 @@ async function composeExtractiveAnswer(queryVec, results) {
     for (const line of r.chunk.text.split(/\n+/)) {
       const t = line.trim();
       if (!t) continue;
-      const isTableRow = (t.match(/ \| /g) || []).length >= 1 || (t.match(/\|/g) || []).length >= 2 || t.split(",").length >= 4;
+      const isTableRow = (t.match(/\|/g) || []).length >= 2 || t.split(",").length >= 4;
       if (isTableRow) {
         units.push({ text: t, row: true }); // table/CSV row — keep intact
       } else {
@@ -354,7 +332,7 @@ async function composeExtractiveAnswer(queryVec, results) {
         const count = j - i + 1;
         const windowScore = sum / count + 0.02 * count + 0.1 * p.r.cosine;
         if (!best || windowScore > best.score) {
-          best = { score: windowScore, mean: sum / count, units: p.units.slice(i, j + 1) };
+          best = { score: windowScore, mean: sum / count, result: p.r, units: p.units.slice(i, j + 1) };
         }
       }
     }
@@ -362,6 +340,13 @@ async function composeExtractiveAnswer(queryVec, results) {
 
   if (!best || best.mean < MIN_SCORE) return results[0].chunk.text;
   const hasRows = best.units.some((u) => u.row);
+  if (hasRows) {
+    const formatted = formatStructuredRows(
+      best.units.map((unit) => ({ line: unit.text, sheet: best.result.chunk.sheet || "" })),
+      { maxRecords: 8 },
+    );
+    if (formatted) return formatted;
+  }
   return best.units.map((u) => u.text).join(hasRows ? "\n" : " ");
 }
 
@@ -472,36 +457,11 @@ function renderSources(entry, idx, results) {
       <p class="source-title">${escapeHtml(r.chunk.title)}</p>
       <p class="source-path">${escapeHtml(r.chunk.source)}</p>
       <p class="source-snippet">${escapeHtml(r.chunk.text.slice(0, 220))}</p>
-      <p class="source-score">${Math.round(r.score * 100)}% match</p>
+      <p class="source-score">${Math.round(Math.max(0, Math.min(1, r.cosine)) * 100)}% semantic match</p>
     `;
     wrap.appendChild(card);
   }
   entry.appendChild(wrap);
-}
-
-/* ── Debug mode (?debug in the URL) ───────────────────────── */
-
-const DEBUG = new URLSearchParams(location.search).has("debug");
-
-function renderDebug(entry, question, query, idx) {
-  // Raw top-10 by hybrid score, regardless of threshold, plus term-hit info.
-  const STOPWORDS = new Set(["the","a","an","is","are","was","were","do","does","how","what","who","where","when","why","can","i","we","you","to","of","in","on","for","and","or","my","our","it","this","that"]);
-  const terms = question.toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g)?.filter((t) => !STOPWORDS.has(t)) || [];
-
-  const scored = idx.chunks.map((chunk) => {
-    const cosine = dot(query, chunk.embedding);
-    const haystack = (chunk.text + " " + chunk.title).toLowerCase();
-    const hits = terms.filter((t) => haystack.includes(t));
-    return { chunk, cosine, hits };
-  }).sort((a, b) => b.cosine - a.cosine).slice(0, 10);
-
-  const box = document.createElement("div");
-  box.className = "debug-box";
-  box.innerHTML = `<p class="debug-title">DEBUG — query terms: [${terms.join(", ")}] — top 10 raw matches (threshold ${MIN_SCORE}, low-confidence below 0.32):</p>` +
-    scored.map((r, i) =>
-      `<div class="debug-row"><strong>#${i + 1}</strong> cos=${r.cosine.toFixed(3)} hits=[${r.hits.join(",")}] — <code>${escapeHtml(r.chunk.source)}</code> (part ${r.chunk.part})<br>${escapeHtml(r.chunk.text.slice(0, 220))}…</div>`
-    ).join("");
-  entry.appendChild(box);
 }
 
 /* ── Ask flow ─────────────────────────────────────────────── */
@@ -529,12 +489,13 @@ els.form.addEventListener("submit", async (event) => {
   const answerEl = entry.querySelector(".entry-answer");
 
   try {
-    const { results, query } = await retrieve(question);
+    const { results, query, codeTerms } = await retrieve(question);
     const idx = await loadIndex();
 
     const confidence = results.length ? results[0].cosine : 0;
 
-    if (results.length === 0 || confidence < 0.32) {
+    const hasExactCodeMatch = results.some((result) => result.exactCodeMatch);
+    if (results.length === 0 || (!hasExactCodeMatch && confidence < 0.32)) {
       answerEl.className = "entry-answer empty-result";
       answerEl.textContent =
         "I don't have a confident answer for that in our files — rather than guess, I'll say so. Try rephrasing, or this topic may need to be added to the knowledge folder.";
@@ -546,7 +507,6 @@ els.form.addEventListener("submit", async (event) => {
         renderSources(entry, idx, results);
       }
       addFeedback(entry, question, "(no confident answer)");
-      if (DEBUG) renderDebug(entry, question, query, idx);
       return;
     }
 
@@ -563,14 +523,15 @@ els.form.addEventListener("submit", async (event) => {
       }
     } else {
       answerEl.textContent = "Composing an answer…";
-      answerEl.textContent = await composeExtractiveAnswer(query, results);
+      answerEl.textContent = formatExactCodeResults(results, codeTerms)
+        || await composeExtractiveAnswer(query, results);
       const note = document.createElement("p");
       note.className = "entry-note";
       note.textContent = "Composed from the most relevant material in our files — sources below.";
       entry.appendChild(note);
     }
 
-    if (confidence < 0.45) {
+    if (!hasExactCodeMatch && confidence < 0.45) {
       const caution = document.createElement("p");
       caution.className = "entry-note";
       caution.textContent = "Heads up: this match wasn't strong, so double-check against the sources below.";
@@ -579,7 +540,6 @@ els.form.addEventListener("submit", async (event) => {
 
     renderSources(entry, idx, results);
     addFeedback(entry, question, answerEl.textContent);
-    if (DEBUG) renderDebug(entry, question, query, idx);
     ringBell({ soft: true }); // answer's ready — a gentle ding
   } catch (err) {
     answerEl.className = "entry-answer empty-result";

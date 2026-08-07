@@ -14,6 +14,7 @@
  */
 
 import { env, pipeline } from "@xenova/transformers";
+import { formatExactCodeResults, rankChunks } from "../site/retrieval.js";
 
 env.cacheDir = ".model-cache";
 
@@ -54,12 +55,6 @@ async function postComment(body) {
   });
 }
 
-function dot(a, b) {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
-  return sum;
-}
-
 function sourceLink(index, chunk) {
   if (chunk.link) return chunk.link;
   if (!index.repo) return null;
@@ -97,14 +92,14 @@ async function main() {
   const output = await embed(question.slice(0, 2000), { pooling: "mean", normalize: true });
   const query = Array.from(output.data);
 
-  const results = index.chunks
-    .map((chunk) => ({ chunk, score: dot(query, chunk.embedding) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_K)
-    .filter((r) => r.score >= MIN_SCORE);
+  const { results, codeTerms } = rankChunks(index.chunks, query, question, {
+    topK: TOP_K,
+    minScore: MIN_SCORE,
+  });
 
-  const confidence = results.length ? results[0].score : 0;
-  if (results.length === 0 || confidence < 0.32) {
+  const confidence = results.length ? results[0].cosine : 0;
+  const hasExactCodeMatch = results.some((result) => result.exactCodeMatch);
+  if (results.length === 0 || (!hasExactCodeMatch && confidence < 0.32)) {
     await postComment(
       "🛎️ Thanks for your question! I searched our reference material but didn't " +
       "find a confident answer — rather than guess, I'll leave this for a maintainer. " +
@@ -162,9 +157,11 @@ async function main() {
   }
 
   // 5. Post the comment.
+  const fallbackPassage = formatExactCodeResults(results, codeTerms)
+    || results[0].chunk.text.slice(0, 900);
   const body = answer
     ? `🛎️ ${answer}\n\n---\n**Sources**\n${sourceList}\n\n<sub>Answered automatically by the Front Desk agent from this repo's reference material. A human can correct anything above.</sub>`
-    : `🛎️ Thanks for your question! Here's the most relevant passage from our reference material:\n\n> ${results[0].chunk.text.slice(0, 900).replace(/\n/g, "\n> ")}\n\n**Sources**\n${sourceList}\n\n<sub>The Front Desk agent found these automatically; the answer-writing model was unavailable just now, so passages are shown directly.</sub>`;
+    : `🛎️ Thanks for your question! Here's the most relevant passage from our reference material:\n\n> ${fallbackPassage.replace(/\n/g, "\n> ")}\n\n**Sources**\n${sourceList}\n\n<sub>The Front Desk agent found these automatically; the answer-writing model was unavailable just now, so passages are shown directly.</sub>`;
 
   await postComment(body);
   console.log("Comment posted.");
