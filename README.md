@@ -57,8 +57,10 @@ Drop files into `knowledge/` (subfolders are fine) and push — or just use
 GitHub's web UI: **Add file → Upload files** into the `knowledge` folder.
 The site rebuilds and redeploys itself in a couple of minutes.
 
-Supported formats: `.md` `.txt` `.pdf` `.docx` `.html` `.csv` `.tsv` `.json`
-`.yml` `.yaml` `.rst` `.org` `.log` — files over 10 MB are skipped.
+Supported formats: `.md` `.txt` `.pdf` `.docx` `.xlsx` `.xls` `.html` `.csv`
+`.tsv` `.json` `.yml` `.yaml` `.rst` `.org` `.log` — files over 10 MB are
+skipped. Excel workbooks are indexed sheet by sheet, so code lists and
+reference tables are searchable row by row.
 
 ## Websites and other repos as sources
 

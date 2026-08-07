@@ -300,40 +300,69 @@ async function retrieve(question) {
 }
 
 /**
- * Free-mode answer composition: score every sentence in the retrieved
- * passages against the question (same in-browser model) and stitch the
- * strongest few into one concise answer, in reading order.
+ * Free-mode answer composition: find the best CONTIGUOUS run of sentences
+ * within a single retrieved passage — never stitched across documents,
+ * which produces incoherent mixed answers. Table rows are kept whole.
  */
 async function composeExtractiveAnswer(queryVec, results) {
-  const candidates = [];
-  results.forEach((r, ri) => {
-    const sentences = r.chunk.text.split(/(?<=[.!?])\s+|\n+/);
-    sentences.forEach((raw, pos) => {
-      const t = raw.trim().replace(/^#{1,6}\s*/, "").replace(/^[-*•]\s*/, "");
-      if (t.length >= 40 && t.length <= 420) {
-        candidates.push({ t, order: ri * 1000 + pos });
+  // Split each top chunk into ordered units (sentences, or whole table rows).
+  const perChunk = [];
+  for (const r of results.slice(0, 4)) {
+    const units = [];
+    for (const line of r.chunk.text.split(/\n+/)) {
+      const t = line.trim();
+      if (!t) continue;
+      const isTableRow = (t.match(/\|/g) || []).length >= 2 || t.split(",").length >= 4;
+      if (isTableRow) {
+        units.push({ text: t, row: true }); // table/CSV row — keep intact
+      } else {
+        for (const sPart of t.split(/(?<=[.!?])\s+/)) {
+          const c = sPart.trim().replace(/^#{1,6}\s*/, "").replace(/^[-*•]\s*/, "");
+          if (c.length >= 25 && c.length <= 500) units.push({ text: c, row: false });
+        }
       }
-    });
-  });
-  if (candidates.length === 0) return results[0].chunk.text;
+    }
+    if (units.length) perChunk.push({ r, units: units.slice(0, 28) });
+  }
+  if (!perChunk.length) return results[0].chunk.text;
 
-  const pool = candidates.slice(0, 80); // bound the in-browser compute
-  const output = await embedder(pool.map((c) => c.t), { pooling: "mean", normalize: true });
+  // Score every unit against the question (one batched embedding call).
+  const flat = perChunk.flatMap((p) => p.units.map((u) => u.text)).slice(0, 100);
+  const output = await embedder(flat, { pooling: "mean", normalize: true });
   const dims = output.dims[1];
-  pool.forEach((c, i) => {
-    let score = 0;
-    for (let k = 0; k < dims; k++) score += queryVec[k] * output.data[i * dims + k];
-    c.score = score;
-  });
+  let cursor = 0;
+  for (const p of perChunk) {
+    for (const u of p.units) {
+      if (cursor >= flat.length) { u.score = 0; continue; }
+      let score = 0;
+      for (let k = 0; k < dims; k++) score += queryVec[k] * output.data[cursor * dims + k];
+      u.score = score;
+      cursor++;
+    }
+  }
 
-  const picked = pool
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 4)
-    .filter((c) => c.score >= MIN_SCORE)
-    .sort((a, b) => a.order - b.order); // reading order, not score order
+  // Best contiguous window (1–5 units, ≤700 chars) within any single chunk.
+  let best = null;
+  for (const p of perChunk) {
+    for (let i = 0; i < p.units.length; i++) {
+      let chars = 0;
+      let sum = 0;
+      for (let j = i; j < Math.min(i + 5, p.units.length); j++) {
+        chars += p.units[j].text.length;
+        if (chars > 700 && j > i) break;
+        sum += p.units[j].score;
+        const count = j - i + 1;
+        const windowScore = sum / count + 0.02 * count + 0.1 * p.r.cosine;
+        if (!best || windowScore > best.score) {
+          best = { score: windowScore, mean: sum / count, units: p.units.slice(i, j + 1) };
+        }
+      }
+    }
+  }
 
-  if (picked.length === 0) return results[0].chunk.text;
-  return picked.map((c) => c.t).join(" ");
+  if (!best || best.mean < MIN_SCORE) return results[0].chunk.text;
+  const hasRows = best.units.some((u) => u.row);
+  return best.units.map((u) => u.text).join(hasRows ? "\n" : " ");
 }
 
 /* ── Optional Claude synthesis ────────────────────────────── */

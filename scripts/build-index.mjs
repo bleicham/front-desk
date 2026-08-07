@@ -100,6 +100,18 @@ async function extractText(path) {
     return text;
   }
 
+  if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
+    const mod = await import("xlsx");
+    const XLSX = mod.default || mod;
+    const wb = XLSX.read(await readFile(path), { type: "buffer" });
+    const parts = [];
+    for (const name of wb.SheetNames) {
+      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]).trim();
+      if (csv) parts.push(`## Sheet: ${name}\n${csv}`);
+    }
+    return parts.join("\n\n");
+  }
+
   if (ext === ".docx") {
     const mammoth = await import("mammoth");
     const { value } = await mammoth.extractRawText({ path });
@@ -210,55 +222,94 @@ async function collectKnowledgeFolder(documents) {
       title: titleFor(file, text),
       link: null,
       text,
-      isMarkdown: /\.(md|markdown)$/i.test(file),
+      isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
     });
     console.log(`Indexed ${rel}`);
   }
 }
 
-async function collectWebsites(documents, websites) {
+async function collectWebsites(documents, websites, report) {
+  const BROWSER_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
+  async function fetchWithTimeout(url, headers) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      return await fetch(url, { signal: controller.signal, redirect: "follow", headers });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   for (const entry of websites) {
     const url = typeof entry === "string" ? entry : entry.url;
     const customTitle = typeof entry === "object" ? entry.title : null;
     if (!url) continue;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      const res = await fetch(url, {
-        signal: controller.signal,
-        redirect: "follow",
-        headers: { "user-agent": "FrontDesk-indexer (+github-pages RAG)" },
-      });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
+    let text = null;
+    let title = customTitle;
+    let isMarkdown = false;
+    let failReason = null;
+
+    // Attempt 1: direct fetch with a browser user agent.
+    try {
+      const res = await fetchWithTimeout(url, { "user-agent": BROWSER_UA, accept: "text/html,application/pdf,*/*" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const contentType = res.headers.get("content-type") || "";
-      let text, title;
       if (contentType.includes("pdf") || url.toLowerCase().endsWith(".pdf")) {
         const { extractText: extractPdf, getDocumentProxy } = await import("unpdf");
         const pdf = await getDocumentProxy(new Uint8Array(await res.arrayBuffer()));
         ({ text } = await extractPdf(pdf, { mergePages: true }));
-        title = customTitle || decodeURIComponent(basename(new URL(url).pathname));
+        title ||= decodeURIComponent(basename(new URL(url).pathname));
       } else {
         const html = await res.text();
         const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        title = customTitle || (match ? stripHtml(match[1]).slice(0, 120) : url);
+        title ||= match ? stripHtml(match[1]).slice(0, 120) : null;
         text = stripHtml(html);
       }
-
-      if (!text || text.length < 80) throw new Error("no extractable text");
-      const u = new URL(url);
-      documents.push({
-        source: (u.host + u.pathname).replace(/\/$/, ""),
-        title,
-        link: url,
-        text,
-        isMarkdown: false,
-      });
-      console.log(`Fetched ${url}`);
     } catch (err) {
-      console.warn(`Skipping website ${url}: ${err.message}`);
+      failReason = err.message;
     }
+
+    // Attempt 2: if the page was blocked or is JavaScript-rendered (thin
+    // HTML), route through the free r.jina.ai reader, which renders the
+    // page and returns clean Markdown.
+    if (!text || text.length < 200) {
+      try {
+        console.log(`  ${url} → thin/blocked (${failReason || (text ? text.length + " chars" : "no text")}), trying reader fallback…`);
+        const res = await fetchWithTimeout(`https://r.jina.ai/${url}`, { accept: "text/markdown, text/plain" });
+        if (!res.ok) throw new Error(`reader HTTP ${res.status}`);
+        const md = await res.text();
+        if (md && md.trim().length >= 200) {
+          text = md.trim();
+          isMarkdown = true;
+          const heading = md.match(/^Title:\s*(.+)$/m) || md.match(/^#\s+(.+)$/m);
+          title ||= heading ? heading[1].trim().slice(0, 120) : null;
+          failReason = null;
+        }
+      } catch (err) {
+        failReason = failReason ? `${failReason}; reader: ${err.message}` : `reader: ${err.message}`;
+      }
+    }
+
+    if (!text || text.trim().length < 80) {
+      const reason = failReason || "no extractable text (JavaScript-only page?)";
+      console.warn(`Skipping website ${url}: ${reason}`);
+      report.websitesFailed.push({ url, reason });
+      continue;
+    }
+
+    const u = new URL(url);
+    documents.push({
+      source: (u.host + u.pathname).replace(/\/$/, ""),
+      title: title || url,
+      link: url,
+      text,
+      isMarkdown,
+    });
+    report.websitesOk.push(url);
+    console.log(`Fetched ${url} (${text.length} chars)`);
   }
 }
 
@@ -274,7 +325,7 @@ function matchesFilters(path, include, exclude) {
   return true;
 }
 
-async function collectRepositories(documents, repositories) {
+async function collectRepositories(documents, repositories, report) {
   const token = process.env.REPOS_TOKEN || "";
   for (const entry of repositories) {
     const spec = typeof entry === "string" ? { repo: entry } : entry;
@@ -318,13 +369,15 @@ async function collectRepositories(documents, repositories) {
           title: titleFor(file, text),
           link: `https://github.com/${spec.repo}/blob/${branch}/${repoPath}`,
           text,
-          isMarkdown: /\.(md|markdown)$/i.test(file),
+          isMarkdown: /\.(md|markdown|xlsx|xls|xlsm)$/i.test(file),
         });
         count++;
       }
       console.log(`Indexed ${count} file(s) from ${spec.repo}`);
+      report.reposOk.push(`${spec.repo} (${count} files)`);
     } catch (err) {
       console.warn(`Skipping repository ${spec.repo}: ${err.message}`);
+      report.reposFailed.push({ repo: spec.repo, reason: err.message.split("\n")[0].slice(0, 200) });
     } finally {
       if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
@@ -347,10 +400,19 @@ async function loadSources() {
 async function main() {
   const sources = await loadSources();
   const documents = [];
+  const report = { websitesOk: [], websitesFailed: [], reposOk: [], reposFailed: [] };
 
   await collectKnowledgeFolder(documents);
-  if (Array.isArray(sources.websites)) await collectWebsites(documents, sources.websites);
-  if (Array.isArray(sources.repositories)) await collectRepositories(documents, sources.repositories);
+
+  const websiteList = Array.isArray(sources.websites) ? sources.websites.filter(Boolean) : [];
+  if (websiteList.length) {
+    await collectWebsites(documents, websiteList, report);
+  } else {
+    console.log("sources.yml: no website entries found (are the examples still commented out?)");
+  }
+
+  const repoList = Array.isArray(sources.repositories) ? sources.repositories.filter(Boolean) : [];
+  if (repoList.length) await collectRepositories(documents, repoList, report);
 
   if (documents.length === 0) {
     console.warn("No documents found anywhere — writing empty index.");
@@ -371,6 +433,7 @@ async function main() {
     }
   }
 
+  if (chunks.length > 0) {
   console.log(`\nEmbedding ${chunks.length} chunks with ${MODEL}…`);
   const embed = await pipeline("feature-extraction", MODEL, { quantized: true });
 
@@ -392,6 +455,7 @@ async function main() {
     });
     console.log(`  ${Math.min(i + BATCH, chunks.length)} / ${chunks.length}`);
   }
+  }
 
   const repo = process.env.GITHUB_REPOSITORY || "";
   const branch = (process.env.GITHUB_REF_NAME || "main").replace(/\//g, "%2F");
@@ -412,6 +476,39 @@ async function main() {
     `\nWrote ${OUTPUT_FILE} (${(json.length / 1024 / 1024).toFixed(2)} MB, ` +
     `${chunks.length} chunks from ${index.documentCount} documents)`
   );
+
+  // Visible build report on the workflow run page (Actions → run → Summary).
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const knowledgeCount = documents.filter((d) => !d.link).length;
+    const lines = [
+      "## 🛎️ Front Desk index report",
+      "",
+      `| Source | Indexed |`,
+      `|---|---|`,
+      "| `knowledge/` files | " + knowledgeCount + " |",
+      `| Websites | ${report.websitesOk.length} |`,
+      `| External repos | ${report.reposOk.length} |`,
+      `| **Total passages** | **${chunks.length}** |`,
+      "",
+    ];
+    if (report.websitesOk.length) {
+      lines.push("**Websites indexed:**", ...report.websitesOk.map((u) => `- ✅ ${u}`), "");
+    }
+    if (report.websitesFailed.length) {
+      lines.push("**Websites that failed:**", ...report.websitesFailed.map((f) => `- ❌ ${f.url} — ${f.reason}`), "");
+    }
+    if (report.reposOk.length) {
+      lines.push("**Repos indexed:**", ...report.reposOk.map((r) => `- ✅ ${r}`), "");
+    }
+    if (report.reposFailed.length) {
+      lines.push("**Repos that failed:**", ...report.reposFailed.map((f) => `- ❌ ${f.repo} — ${f.reason}`), "");
+    }
+    if (!report.websitesOk.length && !report.websitesFailed.length) {
+      lines.push("> No website entries found in `sources.yml` — if you added some, check they're uncommented and indented under `websites:`.", "");
+    }
+    const { appendFile } = await import("node:fs/promises");
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+  }
 }
 
 main().catch((err) => {
