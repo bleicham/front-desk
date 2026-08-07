@@ -1,58 +1,47 @@
-# Upload this accuracy upgrade to `bleicham/front-desk`
+# Upload the GitHub AI upgrade
 
-This bundle keeps the Front Desk free. Search runs with open-source embedding
-models in GitHub Actions and the visitor's browser. No paid API key is required.
+This bundle includes the accuracy improvements plus a secure, free-tier
+GitHub Models answer flow. No GitHub token is placed in the webpage.
 
-## What to upload
+## Upload
 
-Extract `front-desk-accuracy-upgrade.zip`, then upload the **contents** of the
-extracted folder to the root of your GitHub repository. Do not upload the ZIP
-itself, and keep these paths exactly as shown:
+1. Extract `front-desk-github-ai-upgrade.zip`.
+2. Open <https://github.com/bleicham/front-desk>.
+3. Choose **Add file → Upload files**.
+4. Upload the **contents of the extracted folder**, preserving the `.github`,
+   `eval`, `scripts`, `site`, and `test` directories.
+5. Commit the changes to `main`.
 
-- `.github/workflows/deploy.yml` — replace
-- `.github/workflows/benchmark-models.yml` — add
-- `eval/questions.json` — add
-- `scripts/agent.mjs` — replace
-- `scripts/build-index.mjs` — replace
-- `scripts/crawl-utils.mjs` — add
-- `scripts/evaluate.mjs` — add
-- `site/app.js` — replace
-- `site/index.html` — replace
-- `site/retrieval.js` — add or replace
-- `site/style.css` — replace
-- `test/crawl-utils.test.mjs` — add
-- `test/retrieval.test.mjs` — add or replace
-- `package.json` — replace
-- `sources.yml` — replace
-- `README.md` — replace
+Do not upload the ZIP itself. Do not delete or replace your `knowledge/`
+folder—the existing workbook stays there.
 
-Do not replace your `knowledge/` folder. Your Excel workbook remains where it is.
+## Files in this upgrade
 
-## Easiest GitHub upload
+- `.github/workflows/agent.yml` — GPT-4.1-mini issue agent
+- `.github/workflows/deploy.yml` — build, evaluate, and deploy
+- `.github/workflows/benchmark-models.yml` — optional embedding comparison
+- `scripts/agent.mjs` — scoped retrieval, GitHub Models call, verified answer
+- `scripts/agent-utils.mjs` — safe issue parsing and prompt-size limits
+- `scripts/build-index.mjs`, `scripts/crawl-utils.mjs`, `scripts/evaluate.mjs`
+- `site/index.html`, `site/style.css`, `site/app.js`, `site/retrieval.js`
+- `test/*.test.mjs`, `eval/questions.json`
+- `package.json`, `sources.yml`, `README.md`
 
-1. Open <https://github.com/bleicham/front-desk>.
-2. Select **Add file → Upload files**.
-3. Drag the extracted folder contents onto the upload page. Make sure GitHub
-   shows the nested `.github`, `eval`, `scripts`, `site`, and `test` paths.
-4. Commit the changes to `main`.
-5. Open **Actions → Build index & deploy Front Desk** and watch the run. It now
-   builds the index, runs the accuracy checks, and deploys only after the core
-   checks pass.
+## Enable and test
 
-The crawl now discovers sitemap pages and is capped at 60 pages for each
-Hubverse source. The first build can therefore take longer than before.
+1. Open **Settings → Actions → General** and ensure Actions are allowed.
+2. Open **Actions → Build index & deploy Front Desk** and wait for deployment.
+3. Visit the Pages site, type a question, select its source, and click
+   **Ask AI on GitHub**.
+4. GitHub opens a prefilled issue. Select **Submit new issue**.
+5. Watch **Actions → Front Desk agent (answers new issues)**. GPT-4.1-mini
+   should post a cited answer as an issue comment.
 
-## After deployment
+The visitor must be signed in to GitHub to submit the issue. GitHub Models is
+rate-limited. Keep paid Models usage disabled to maintain a $0 ceiling; when
+the model is unavailable, the workflow posts the best source passage instead.
 
-Try these searches:
-
-- `What is ICD-10 code J12.82?`
-- `List all LOINC codes for HIV`
-- `What are all codes for COVID-19?`
-- Choose **Hubverse website**, then ask: `What is the Hubverse?`
-- Choose **Hubverse documentation**, then ask: `How should model output data be formatted?`
-
-For the free model comparison, open **Actions → Compare free embedding models →
-Run workflow**. It evaluates MiniLM and BGE-small without changing the deployed
-model. Download the two evaluation artifacts to compare the results.
+If the workflow reports that Models access is disabled, enable GitHub Models
+for the repository or account in GitHub's Models settings, then open a new AI
+question issue.
 

@@ -43,5 +43,5 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
-          # AGENT_MODEL: openai/gpt-4o-mini      # override the model here
+          AGENT_MODEL: openai/gpt-4.1-mini
           # PAGES_URL: https://docs.example.com  # set if you use a custom domain

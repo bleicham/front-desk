@@ -132,7 +132,7 @@ test("source scopes keep website, docs, and workbook retrieval separate", () => 
 test("citation verification rejects unsupported generated claims", () => {
   const results = [{ chunk: { text: "Hubverse model tasks are recorded in tasks.json files." } }];
   assert.equal(
-    verifyCitedAnswer("Model tasks are recorded in tasks.json files [1].", results).ok,
+    verifyCitedAnswer("## Model tasks\nModel tasks are recorded in tasks.json files [1].", results).ok,
     true,
   );
   assert.equal(

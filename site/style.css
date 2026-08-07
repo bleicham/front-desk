@@ -189,6 +189,22 @@ body {
 .ask-button:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
 .ask-button:disabled { opacity: 0.5; cursor: default; }
 
+.ai-button {
+  font-family: var(--body);
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--spruce);
+  background: var(--brass-soft);
+  border: 1px solid var(--brass);
+  border-radius: 3px;
+  padding: 9px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-button:hover { background: #e7d9bc; }
+.ai-button:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+
 .source-filter {
   display: flex;
   align-items: center;
@@ -214,6 +230,8 @@ body {
 }
 
 .source-filter select:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+.ai-note { font-size: 0.72rem; }
 
 .chips {
   display: flex;
@@ -482,7 +500,7 @@ body {
 
 @media (max-width: 560px) {
   .register { flex-direction: column; }
-  .ask-button { padding: 12px; }
+  .ask-button, .ai-button { padding: 12px; }
   .source-filter { align-items: flex-start; flex-direction: column; gap: 4px; }
   .masthead-inner { flex-direction: column; gap: 4px; align-items: flex-start; }
   .settings-row { flex-direction: column; align-items: stretch; }

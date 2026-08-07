@@ -31,6 +31,7 @@ const els = {
   form: document.getElementById("ask-form"),
   question: document.getElementById("question"),
   askButton: document.getElementById("ask-button"),
+  askAiButton: document.getElementById("ask-ai-button"),
   sourceScope: document.getElementById("source-scope"),
   chips: document.getElementById("chips"),
   status: document.getElementById("status"),
@@ -435,6 +436,23 @@ function sourceUrl(idx, chunk) {
   return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
+function aiIssueUrl(idx, question, scope = "auto") {
+  if (!idx?.repo) return null;
+  const cleanQuestion = String(question || "").trim().slice(0, 3000);
+  const title = encodeURIComponent(`[Front Desk AI] ${cleanQuestion.slice(0, 90)}`);
+  const body = encodeURIComponent([
+    "<!-- front-desk-ai -->",
+    "### Question",
+    cleanQuestion,
+    "",
+    "### Search scope",
+    scope,
+    "",
+    "_Submit this issue to receive a source-cited answer from the free GitHub Models workflow._",
+  ].join("\n"));
+  return `https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}`;
+}
+
 function addFeedback(entry, question, answer, scope = "auto") {
   const idx = index;
   if (!idx || !idx.repo) return;
@@ -444,8 +462,10 @@ function addFeedback(entry, question, answer, scope = "auto") {
   const body = encodeURIComponent(
     `**Question asked:**\n${question}\n\n**Search scope:** ${scope}\n\n**Answer shown:**\n${answer.slice(0, 1000)}\n\n**What was wrong or missing:**\n(please describe)`
   );
+  const aiUrl = aiIssueUrl(idx, question, scope);
   row.innerHTML =
-    `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a> so we can fix the source material.`;
+    `${aiUrl ? `<a href="${aiUrl}" target="_blank" rel="noopener">Ask the GitHub AI for a cited answer</a> · ` : ""}` +
+    `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a>.`;
   entry.appendChild(row);
 }
 
@@ -497,6 +517,24 @@ function renderSources(entry, idx, results) {
 /* ── Ask flow ─────────────────────────────────────────────── */
 
 let busy = false;
+
+els.askAiButton?.addEventListener("click", async () => {
+  const question = els.question.value.trim();
+  if (!question) {
+    setStatus("Type a question first, then choose Ask AI on GitHub.");
+    els.question.focus();
+    return;
+  }
+  try {
+    const idx = await loadIndex();
+    const url = aiIssueUrl(idx, question, els.sourceScope?.value || "auto");
+    if (!url) throw new Error("the deployed index does not identify its GitHub repository");
+    window.open(url, "_blank", "noopener");
+    setStatus("GitHub opened in a new tab. Submit the prefilled issue to receive the AI answer.");
+  } catch (err) {
+    setStatus(`Couldn't open the GitHub AI request: ${err.message}`);
+  }
+});
 
 els.form.addEventListener("submit", async (event) => {
   event.preventDefault();

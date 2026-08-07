@@ -457,6 +457,7 @@ export function verifyCitedAnswer(answer, results) {
     .filter(Boolean);
 
   for (const sentence of sentences) {
+    if (/^#{1,6}\s/.test(sentence) || /^\*\*[^*]+\*\*:?$/.test(sentence)) continue;
     const tokens = unique(searchTokens(sentence.replace(/\[\d+\]/g, "")))
       .filter((token) => token.length >= 3);
     if (tokens.length < 4) continue;

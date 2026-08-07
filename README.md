@@ -122,21 +122,25 @@ answers). For composed, conversational answers, a visitor can click
 stored only in their own browser's localStorage and requests go directly from
 their browser to Anthropic — there's no server in the middle. Cost with the
 default `claude-haiku-4-5` model is roughly a tenth of a cent per question.
+Skip this optional setting to keep the Front Desk at $0; the GitHub AI flow
+below does not use an Anthropic key.
 
 ## The issue agent (free AI answers on GitHub itself)
 
-The repo also ships a small agent: when anyone **opens an issue**, a workflow
-retrieves the most relevant passages from the same index and asks a model on
-**GitHub Models** — GitHub's free inference API, authenticated with the repo's
-own built-in `GITHUB_TOKEN` — to compose an answer, then posts it as a comment
-with source links. No API key, no billing.
+The site includes an **Ask AI on GitHub** button. It opens a prefilled issue;
+after the visitor submits it, a workflow retrieves up to 16 strong candidate
+passages and asks **GPT-4.1-mini through GitHub Models** to compose a concise
+answer with citations. The agent verifies that generated statements are
+supported by their cited passages before posting the answer as an issue
+comment. The repository's built-in `GITHUB_TOKEN` stays inside GitHub Actions
+and is never exposed to the browser.
 
 Nothing to configure: it works as soon as the repo is pushed and the Pages
-site has deployed once (the agent reads the index from the live site). The
-free tier is rate-limited to a modest number of requests per day — plenty for
-a front desk; if a call is rate-limited, the agent posts the best matching
-passages instead, so questions never go unanswered. You can swap the model
-via the `AGENT_MODEL` env var in `.github/workflows/agent.yml`.
+site has deployed once. GitHub Models' included usage is rate-limited and
+intended for modest traffic. Keep paid Models usage disabled to enforce a $0
+ceiling. If the model is unavailable or rate-limited, the agent posts the
+strongest retrieved passage instead. You can swap the model through
+`AGENT_MODEL` in `.github/workflows/agent.yml`.
 
 To make the desk visible, add an issue template or a README badge inviting
 people to "Open an issue to ask the Front Desk."
@@ -167,6 +171,7 @@ people to "Open an issue to ask the Front Desk."
 ├── scripts/
 │   ├── build-index.mjs   ← extraction, crawling, chunking, embedding
 │   ├── crawl-utils.mjs   ← URL, link, and sitemap discovery helpers
+│   ├── agent-utils.mjs   ← safe issue parsing and bounded AI context
 │   └── evaluate.mjs      ← repeatable retrieval accuracy checks
 ├── eval/
 │   └── questions.json    ← expected retrieval behavior

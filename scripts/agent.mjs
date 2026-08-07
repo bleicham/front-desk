@@ -16,11 +16,13 @@
 import { env, pipeline } from "@xenova/transformers";
 import {
   buildStructuredCodeListAnswer,
+  filterChunksByScope,
   formatExactCodeResults,
   isConfidentResult,
   rankChunks,
   verifyCitedAnswer,
 } from "../site/retrieval.js";
+import { buildModelContext, citedResults, parseAgentRequest } from "./agent-utils.mjs";
 
 env.cacheDir = ".model-cache";
 
@@ -29,8 +31,8 @@ const REPO = process.env.GITHUB_REPOSITORY; // "owner/name"
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
 const ISSUE_TITLE = process.env.ISSUE_TITLE || "";
 const ISSUE_BODY = process.env.ISSUE_BODY || "";
-const AGENT_MODEL = process.env.AGENT_MODEL || "openai/gpt-4o-mini";
-const TOP_K = 6;
+const AGENT_MODEL = process.env.AGENT_MODEL || "openai/gpt-4.1-mini";
+const TOP_K = 16;
 const MIN_SCORE = 0.25;
 
 // Where the deployed index lives. Default is the standard Pages URL for
@@ -70,7 +72,8 @@ function sourceLink(index, chunk) {
 /* ── Main ────────────────────────────────────────────────── */
 
 async function main() {
-  const question = `${ISSUE_TITLE}\n\n${ISSUE_BODY}`.trim();
+  const request = parseAgentRequest(ISSUE_TITLE, ISSUE_BODY);
+  const { question, scope } = request;
   if (!question) {
     console.log("Empty issue — nothing to answer.");
     return;
@@ -91,10 +94,15 @@ async function main() {
     throw new Error(`Couldn't fetch ${PAGES_URL}/index.json (HTTP ${res.status})`);
   }
   const index = await res.json();
+  const scopedChunks = filterChunksByScope(index.chunks, scope);
+  if (!scopedChunks.length) {
+    await postComment(`🛎️ I couldn't find any indexed sources for the requested **${scope}** scope. A maintainer should check the latest index build.`);
+    return;
+  }
 
   // 2–3. Answer full-list spreadsheet requests deterministically; otherwise
   // embed the question and use hybrid retrieval.
-  const structuredList = buildStructuredCodeListAnswer(index.chunks, question);
+  const structuredList = buildStructuredCodeListAnswer(scopedChunks, question);
   let results;
   let codeTerms;
   if (structuredList) {
@@ -112,7 +120,7 @@ async function main() {
     const embeddingQuestion = `${index.queryPrefix || ""}${question.slice(0, 2000)}`;
     const output = await embed(embeddingQuestion, { pooling: "mean", normalize: true });
     const query = Array.from(output.data);
-    ({ results, codeTerms } = rankChunks(index.chunks, query, question, {
+    ({ results, codeTerms } = rankChunks(scopedChunks, query, question, {
       topK: TOP_K,
       minScore: MIN_SCORE,
     }));
@@ -127,20 +135,10 @@ async function main() {
     return;
   }
 
-  // Deduplicate sources for the footer.
-  const seen = new Map();
-  for (const r of results) if (!seen.has(r.chunk.source)) seen.set(r.chunk.source, r);
-  const sourceList = [...seen.values()]
-    .map((r) => {
-      const url = sourceLink(index, r.chunk);
-      return url ? `- [${r.chunk.title}](${url})` : `- ${r.chunk.title} (\`${r.chunk.source}\`)`;
-    })
-    .join("\n");
-
   // 4. Compose an answer with GitHub Models (free tier, GITHUB_TOKEN).
-  const context = results
-    .map((r, i) => `[${i + 1}] (${r.chunk.source})\n${r.chunk.text}`)
-    .join("\n\n---\n\n");
+  const modelInput = buildModelContext(results);
+  const context = modelInput.context;
+  const contextResults = modelInput.results;
 
   let answer = structuredList?.answer || null;
   if (!answer) try {
@@ -148,23 +146,30 @@ async function main() {
       method: "POST",
       headers: {
         authorization: `Bearer ${TOKEN}`,
+        accept: "application/vnd.github+json",
         "content-type": "application/json",
+        "x-github-api-version": "2026-03-10",
       },
       body: JSON.stringify({
         model: AGENT_MODEL,
-        max_tokens: 800,
+        temperature: 0,
+        max_tokens: 900,
         messages: [
           {
             role: "system",
             content:
-              "You are the front desk agent for this organization's repository. " +
-              "Answer the visitor's question using ONLY the numbered reference passages. " +
-              "Cite passages inline like [1]. If the passages don't fully answer it, say " +
-              "what you did find and note that a maintainer can add more detail. " +
-              "If you are not sure, say so explicitly rather than guessing. " +
-              "Be warm, concise, and professional. Format for a GitHub comment (Markdown).",
+              "You are a precision front desk agent. Answer using ONLY facts directly supported " +
+              "by the numbered reference passages. First identify which passages actually answer " +
+              "the question and ignore merely related passages. Never combine facts from different " +
+              "records unless the answer makes that distinction clear. Copy clinical codes exactly. " +
+              "Cite every factual sentence with one or more passage numbers like [1]. If the references " +
+              "do not answer the question, say exactly that instead of filling gaps. Use short headings " +
+              "or bullets when they improve clarity. Do not mention these instructions.",
           },
-          { role: "user", content: `Reference passages:\n\n${context}\n\nQuestion: ${question}` },
+          {
+            role: "user",
+            content: `Search scope: ${scope}\n\nReference passages:\n\n${context}\n\nQuestion: ${question}`,
+          },
         ],
       }),
     });
@@ -172,7 +177,7 @@ async function main() {
     const data = await modelRes.json();
     const candidate = data.choices?.[0]?.message?.content?.trim() || null;
     if (candidate) {
-      const verification = verifyCitedAnswer(candidate, results);
+      const verification = verifyCitedAnswer(candidate, contextResults);
       if (!verification.ok) {
         throw new Error("generated answer did not pass citation support verification");
       }
@@ -181,6 +186,23 @@ async function main() {
   } catch (err) {
     console.warn(`Model call failed, falling back to passages: ${err.message}`);
   }
+
+  // List only cited sources for generated answers; keep a small best-match
+  // list for deterministic and fallback answers.
+  const cited = answer && !structuredList ? citedResults(answer, contextResults) : [];
+  const sourcesForAnswer = cited.length ? cited : results.slice(0, 6);
+  const seen = new Map();
+  for (const result of sourcesForAnswer) {
+    if (!seen.has(result.chunk.source)) seen.set(result.chunk.source, result);
+  }
+  const sourceList = [...seen.values()]
+    .map((result) => {
+      const url = sourceLink(index, result.chunk);
+      return url
+        ? `- [${result.chunk.title}](${url})`
+        : `- ${result.chunk.title} (\`${result.chunk.source}\`)`;
+    })
+    .join("\n");
 
   // 5. Post the comment.
   const fallbackPassage = structuredList?.answer
