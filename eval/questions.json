@@ -31,6 +31,15 @@
     "minUniqueCodes": 3
   },
   {
+    "id": "hubverse-complete-hub-directory",
+    "type": "hub-directory",
+    "scope": "website",
+    "question": "What hubs are available?",
+    "answerIncludes": ["Active", "Archival", "Training", "Model Development"],
+    "minHubs": 30,
+    "sourcePattern": "hubverse\\.io/community/hubs\\.html"
+  },
+  {
     "id": "hubverse-website-scope",
     "type": "lookup",
     "scope": "website",
@@ -60,4 +69,3 @@
     "required": false
   }
 ]
-

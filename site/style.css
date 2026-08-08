@@ -189,22 +189,6 @@ body {
 .ask-button:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
 .ask-button:disabled { opacity: 0.5; cursor: default; }
 
-.ai-button {
-  font-family: var(--body);
-  font-size: 0.83rem;
-  font-weight: 600;
-  color: var(--spruce);
-  background: var(--brass-soft);
-  border: 1px solid var(--brass);
-  border-radius: 3px;
-  padding: 9px 15px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ai-button:hover { background: #e7d9bc; }
-.ai-button:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
-
 .source-filter {
   display: flex;
   align-items: center;
@@ -355,6 +339,12 @@ body {
   margin: 0 0 8px;
 }
 
+.source-location {
+  font-size: 0.76rem;
+  color: var(--spruce);
+  margin: -3px 0 8px;
+}
+
 .source-snippet {
   font-size: 0.8rem;
   line-height: 1.5;
@@ -411,100 +401,13 @@ body {
 
 #index-meta { font-family: var(--mono); font-size: 0.72rem; }
 
-.settings-link {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--spruce);
-  background: none;
-  border: none;
-  border-bottom: 1px dotted var(--line-strong);
-  padding: 0;
-  cursor: pointer;
-}
-
-.settings {
-  margin-top: 18px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 20px 24px;
-}
-
-.settings h2 {
-  font-family: var(--display);
-  font-weight: 400;
-  font-size: 1.05rem;
-  color: var(--spruce);
-  margin: 0 0 8px;
-}
-
-.optional-tag {
-  font-family: var(--mono);
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--brass);
-  margin-left: 8px;
-}
-
-.settings p { font-size: 0.85rem; }
-
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 12px 0;
-}
-
-.settings-row label {
-  flex: none;
-  width: 140px;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.settings-row input {
-  flex: 1;
-  font-family: var(--mono);
-  font-size: 0.82rem;
-  padding: 7px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  background: var(--porcelain);
-  color: var(--ink);
-}
-
-.settings-row input:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
-
-.settings-actions { display: flex; gap: 10px; margin-top: 14px; }
-
-.settings-actions button {
-  font-family: var(--body);
-  font-size: 0.82rem;
-  font-weight: 500;
-  padding: 7px 18px;
-  border-radius: 3px;
-  border: none;
-  background: var(--spruce);
-  color: var(--porcelain);
-  cursor: pointer;
-}
-
-.settings-actions button.ghost {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  color: var(--muted);
-}
-
 /* ── Responsive & accessibility ───────────────────────────── */
 
 @media (max-width: 560px) {
   .register { flex-direction: column; }
-  .ask-button, .ai-button { padding: 12px; }
+  .ask-button { padding: 12px; }
   .source-filter { align-items: flex-start; flex-direction: column; gap: 4px; }
   .masthead-inner { flex-direction: column; gap: 4px; align-items: flex-start; }
-  .settings-row { flex-direction: column; align-items: stretch; }
-  .settings-row label { width: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

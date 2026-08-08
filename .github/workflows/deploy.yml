@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Run unit tests
+        run: npm test
+
       - name: Build search index (knowledge folder + external sources)
         run: npm run build
         env:

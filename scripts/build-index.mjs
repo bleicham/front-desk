@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { env, pipeline } from "@xenova/transformers";
 import { canonicalUrl, extractLinks, extractSitemapUrls } from "./crawl-utils.mjs";
+import { hubToIndexText, parseHubverseDirectoryHtml } from "./hubverse-hubs.mjs";
 
 // Cache the downloaded model inside the workspace so GitHub Actions
 // can restore it between runs (see .github/workflows/deploy.yml).
@@ -459,6 +460,97 @@ async function collectWebsites(documents, websites, report) {
   }
 }
 
+function locationForPiece(doc, piece, part) {
+  if (piece.location) return piece.location;
+  if (piece.sheet) {
+    const rows = [...String(piece.text || "").matchAll(/^Row\s+(\d+)\s*\|/gmi)]
+      .map((match) => Number(match[1]));
+    if (rows.length) {
+      const range = rows.length === 1 ? `row ${rows[0]}` : `rows ${rows[0]}–${rows.at(-1)}`;
+      return `Sheet “${piece.sheet}” — ${range}`;
+    }
+    return `Sheet “${piece.sheet}”`;
+  }
+  const heading = String(piece.text || "").match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim();
+  if (heading) return `Section “${heading.slice(0, 120)}”`;
+
+  const offset = String(doc.text || "").indexOf(String(piece.text || ""));
+  if (offset >= 0 && !doc.link) {
+    const start = String(doc.text).slice(0, offset).split("\n").length;
+    const end = start + String(piece.text || "").split("\n").length - 1;
+    return start === end ? `Line ${start}` : `Lines ${start}–${end}`;
+  }
+  return `Indexed passage ${part + 1}`;
+}
+
+async function collectStructuredSources(documents, structuredSources, report) {
+  for (const entry of structuredSources) {
+    const spec = typeof entry === "string" ? { type: entry } : entry;
+    if (spec.type !== "hubverse-hub-directory") {
+      const message = `Unsupported structured source type: ${spec.type || "(missing)"}`;
+      if (spec.required !== false) throw new Error(message);
+      console.warn(message);
+      report.structuredFailed.push({ type: spec.type, reason: message });
+      continue;
+    }
+
+    const url = spec.url || "https://hubverse.io/community/hubs.html";
+    const citation = spec.citation || url;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      let response;
+      try {
+        response = await fetch(url, {
+          signal: controller.signal,
+          redirect: "follow",
+          headers: {
+            "user-agent": "Front-Desk verified source indexer",
+            accept: "text/html,*/*",
+          },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const directory = parseHubverseDirectoryHtml(await response.text(), { citation });
+      documents.push({
+        source: new URL(citation).host + new URL(citation).pathname,
+        title: "Hubverse hub directory",
+        link: citation,
+        text: directory.hubs.map(hubToIndexText).join("\n\n"),
+        isMarkdown: false,
+        kind: "hub-directory",
+        preparedChunks: directory.hubs.map((hub) => ({
+          title: hub.name,
+          text: hubToIndexText(hub),
+          kind: "hub-directory",
+          hub,
+          location: hub.location,
+          sourceUpdated: directory.updated,
+        })),
+      });
+      report.structuredOk.push({
+        type: spec.type,
+        url,
+        count: directory.hubs.length,
+        updated: directory.updated,
+      });
+      console.log(
+        `Verified ${directory.hubs.length} Hubverse hub rows` +
+        `${directory.updated ? ` (source updated ${directory.updated})` : ""}`,
+      );
+    } catch (err) {
+      report.structuredFailed.push({ type: spec.type, url, reason: err.message });
+      if (spec.required !== false) {
+        throw new Error(`Required structured source ${url} failed validation: ${err.message}`);
+      }
+      console.warn(`Skipping optional structured source ${url}: ${err.message}`);
+    }
+  }
+}
+
 function matchesFilters(path, include, exclude) {
   const test = (patterns) =>
     patterns.some((p) =>
@@ -554,9 +646,17 @@ async function loadSources() {
 async function main() {
   const sources = await loadSources();
   const documents = [];
-  const report = { websitesOk: [], websitesFailed: [], reposOk: [], reposFailed: [] };
+  const report = {
+    websitesOk: [], websitesFailed: [], reposOk: [], reposFailed: [],
+    structuredOk: [], structuredFailed: [],
+  };
 
   await collectKnowledgeFolder(documents);
+
+  const structuredList = Array.isArray(sources.structured_sources)
+    ? sources.structured_sources.filter(Boolean)
+    : [];
+  if (structuredList.length) await collectStructuredSources(documents, structuredList, report);
 
   const websiteList = Array.isArray(sources.websites) ? sources.websites.filter(Boolean) : [];
   if (websiteList.length) {
@@ -584,8 +684,11 @@ async function main() {
         link: doc.link,
         part: i,
         text: piece.text,
-        kind: doc.kind || "document",
+        kind: piece.kind || doc.kind || "document",
         ...(piece.sheet ? { sheet: piece.sheet } : {}),
+        ...(piece.hub ? { hub: piece.hub } : {}),
+        location: locationForPiece(doc, piece, i),
+        ...(piece.sourceUpdated ? { sourceUpdated: piece.sourceUpdated } : {}),
       });
     }
   }
@@ -645,12 +748,29 @@ async function main() {
       `|---|---|`,
       "| `knowledge/` files | " + knowledgeCount + " |",
       `| Websites | ${report.websitesOk.length} |`,
+      `| Verified structured sources | ${report.structuredOk.length} |`,
       `| External repos | ${report.reposOk.length} |`,
       `| **Total passages** | **${chunks.length}** |`,
       "",
     ];
     if (report.websitesOk.length) {
       lines.push("**Websites indexed:**", ...report.websitesOk.map((u) => `- ✅ ${u}`), "");
+    }
+    if (report.structuredOk.length) {
+      lines.push(
+        "**Verified structured sources:**",
+        ...report.structuredOk.map((item) =>
+          `- ✅ ${item.type}: ${item.count} records${item.updated ? ` (updated ${item.updated})` : ""}`
+        ),
+        "",
+      );
+    }
+    if (report.structuredFailed.length) {
+      lines.push(
+        "**Structured sources that failed:**",
+        ...report.structuredFailed.map((item) => `- ❌ ${item.url || item.type} — ${item.reason}`),
+        "",
+      );
     }
     if (report.websitesFailed.length) {
       lines.push("**Websites that failed:**", ...report.websitesFailed.map((f) => `- ❌ ${f.url} — ${f.reason}`), "");

@@ -2,6 +2,7 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { env, pipeline } from "@xenova/transformers";
 import {
   buildStructuredCodeListAnswer,
+  buildStructuredHubDirectoryAnswer,
   extractCodeTerms,
   filterChunksByScope,
   formatExactCodeResults,
@@ -60,6 +61,23 @@ async function runCase(testCase) {
       score: 1,
     }));
     checks.push({ check: "complete-list handler answered", pass: Boolean(list) });
+  } else if (testCase.type === "hub-directory") {
+    const list = buildStructuredHubDirectoryAnswer(chunks, testCase.question);
+    answer = list?.answer || "";
+    results = (list?.chunks || []).map((chunk) => ({
+      chunk,
+      cosine: 1,
+      structuredListMatch: true,
+      score: 1,
+    }));
+    checks.push({ check: "verified hub-directory handler answered", pass: Boolean(list) });
+    if (testCase.minHubs != null) {
+      checks.push({
+        check: `at least ${testCase.minHubs} hubs`,
+        pass: (list?.hubCount || 0) >= testCase.minHubs,
+        detail: `${list?.hubCount || 0}`,
+      });
+    }
   } else {
     const codeTerms = extractCodeTerms(testCase.question);
     const vector = codeTerms.length
@@ -157,4 +175,3 @@ if (process.env.GITHUB_STEP_SUMMARY) {
   await appendFile(process.env.GITHUB_STEP_SUMMARY, `${summary.join("\n")}\n`);
 }
 if (!report.allPassed) process.exitCode = 1;
-

@@ -41,12 +41,112 @@ export function filterChunksByScope(chunks, scope = "auto") {
       return chunk.kind === "website" && /(^|\.)docs\.hubverse\.io$/i.test(sourceHost(chunk));
     }
     if (scope === "website") {
-      return chunk.kind === "website"
+      return (chunk.kind === "website" || chunk.kind === "hub-directory")
         && /(^|\.)hubverse\.io$/i.test(sourceHost(chunk))
         && !/(^|\.)docs\.hubverse\.io$/i.test(sourceHost(chunk));
     }
     return true;
   });
+}
+
+function hubDirectoryChunks(chunks) {
+  const seen = new Set();
+  return chunks.filter((chunk) => {
+    if (chunk.kind !== "hub-directory" || !chunk.hub?.name) return false;
+    const key = `${chunk.hub.name}\u0000${chunk.hub.organization}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function requestedHubCategory(question) {
+  if (/\barchiv(?:al|ed|e)\b/i.test(question)) return "Archival";
+  if (/\btraining\b/i.test(question)) return "Training";
+  if (/\bmodel\s+development\b/i.test(question)) return "Model Development";
+  if (/\bactive\b/i.test(question)) return "Active";
+  return null;
+}
+
+/**
+ * Answer directory/list questions directly from every verified Hubverse row.
+ * This bypasses TOP_K retrieval so a complete list can never be truncated.
+ */
+export function buildStructuredHubDirectoryAnswer(chunks, question) {
+  const directoryChunks = hubDirectoryChunks(chunks);
+  if (!directoryChunks.length || !/\bhubs\b/i.test(question)) return null;
+  const listIntent = /\b(?:what|which|list|show|available|all|any|find|have|has)\b|\bare\s+there\b/i.test(question);
+  if (!listIntent) return null;
+
+  const category = requestedHubCategory(question);
+  const generic = new Set([
+    "active", "all", "any", "are", "available", "current", "currently",
+    "development", "directory", "find", "has", "have", "hub", "hubs",
+    "hubverse", "list", "listed", "model", "models", "show", "there",
+    "training", "archival", "archived", "what", "which",
+  ]);
+  const filterTerms = searchTokens(question).filter((term) => !generic.has(term));
+  let selected = directoryChunks;
+  if (category) {
+    selected = selected.filter((chunk) => chunk.hub.category.toLowerCase() === category.toLowerCase());
+  }
+  if (filterTerms.length) {
+    selected = selected.filter((chunk) => {
+      const haystack = searchTokens([
+        chunk.hub.name,
+        chunk.hub.organization,
+        chunk.hub.category,
+        chunk.text,
+      ].join(" "));
+      const words = new Set(haystack);
+      return filterTerms.every((term) => words.has(term));
+    });
+  }
+
+  const updated = directoryChunks.find((chunk) => chunk.sourceUpdated)?.sourceUpdated || null;
+  const descriptor = category ? `${category.toLowerCase()} hubs` : "hubs";
+  const intro = filterTerms.length
+    ? `${selected.length.toLocaleString()} ${descriptor} match “${filterTerms.join(" ")}” in the verified Hubverse directory.`
+    : `${selected.length.toLocaleString()} ${descriptor} ${selected.length === 1 ? "is" : "are"} listed in the verified Hubverse directory.`;
+  const output = [intro + (updated ? ` Source updated ${updated}.` : "")];
+
+  const categoryOrder = ["Active", "Archival", "Training", "Model Development"];
+  const groups = new Map();
+  for (const chunk of selected) {
+    const key = chunk.hub.category || "Other";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(chunk.hub);
+  }
+  const orderedGroups = [...groups.entries()].sort(([a], [b]) => {
+    const ai = categoryOrder.indexOf(a);
+    const bi = categoryOrder.indexOf(b);
+    return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi) || a.localeCompare(b);
+  });
+  for (const [group, hubs] of orderedGroups) {
+    hubs.sort((a, b) => a.name.localeCompare(b.name));
+    output.push("", `${group} (${hubs.length.toLocaleString()})`);
+    for (const hub of hubs) {
+      const details = [];
+      if (hub.isPrivate) details.push("private");
+      if (hub.models != null) details.push(`${hub.models.toLocaleString()} model${hub.models === 1 ? "" : "s"}`);
+      if (hub.dataRows != null) details.push(`${hub.dataRows.toLocaleString()} data rows`);
+      output.push(`• ${hub.name} — ${hub.organization}${details.length ? ` (${details.join("; ")})` : ""}`);
+    }
+  }
+
+  const first = directoryChunks[0];
+  const citationChunk = {
+    ...first,
+    title: "Hubverse — List of hubs",
+    text: `Official directory table containing ${directoryChunks.length} verified hub rows.`,
+    location: `List of hubs table — all ${directoryChunks.length} rows`,
+  };
+  return {
+    answer: output.join("\n"),
+    chunks: [citationChunk],
+    hubCount: selected.length,
+    sourceHubCount: directoryChunks.length,
+  };
 }
 
 function sourceHost(chunk) {

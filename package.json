@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "A free, self-updating RAG front desk for your GitHub org. Drop files in /knowledge, get a searchable assistant on GitHub Pages.",
+  "description": "A free, self-updating, source-verified front desk for GitHub Pages.",
   "scripts": {
     "build": "node scripts/build-index.mjs",
     "evaluate": "node scripts/evaluate.mjs",

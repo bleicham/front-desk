@@ -6,18 +6,18 @@
  *    same model used at build time, so vectors are comparable. Free.
  * 3. Ranks chunks by cosine similarity and shows the best passages,
  *    each linking back to its source file on GitHub.
- * 4. Optionally (if the visitor saves an Anthropic API key in settings),
- *    asks Claude to compose an answer from the retrieved passages.
+ * 4. Uses deterministic handlers for complete code and Hubverse directory
+ *    lists; all other answers are extractive, so the site never invents text.
  */
 
 import {
   buildStructuredCodeListAnswer,
+  buildStructuredHubDirectoryAnswer,
   filterChunksByScope,
   formatExactCodeResults,
   formatStructuredRows,
   isConfidentResult,
   rankChunks,
-  verifyCitedAnswer,
 } from "./retrieval.js";
 
 const CONFIG = window.FRONT_DESK || {};
@@ -31,19 +31,12 @@ const els = {
   form: document.getElementById("ask-form"),
   question: document.getElementById("question"),
   askButton: document.getElementById("ask-button"),
-  askAiButton: document.getElementById("ask-ai-button"),
   sourceScope: document.getElementById("source-scope"),
   chips: document.getElementById("chips"),
   status: document.getElementById("status"),
   ledger: document.getElementById("ledger"),
   bell: null, // created by setupBell() below
   indexMeta: document.getElementById("index-meta"),
-  settingsToggle: document.getElementById("settings-toggle"),
-  settings: document.getElementById("settings"),
-  apiKey: document.getElementById("api-key"),
-  apiModel: document.getElementById("api-model"),
-  saveSettings: document.getElementById("save-settings"),
-  clearSettings: document.getElementById("clear-settings"),
 };
 
 /* ── The bell ─────────────────────────────────────────────── */
@@ -198,33 +191,6 @@ for (const suggestion of CONFIG.suggestions || []) {
   els.chips.appendChild(chip);
 }
 
-/* ── Settings (optional Claude synthesis) ─────────────────── */
-
-const stored = {
-  get key() { return localStorage.getItem("frontdesk.apiKey") || ""; },
-  set key(v) { v ? localStorage.setItem("frontdesk.apiKey", v) : localStorage.removeItem("frontdesk.apiKey"); },
-  get model() { return localStorage.getItem("frontdesk.model") || "claude-haiku-4-5"; },
-  set model(v) { localStorage.setItem("frontdesk.model", v); },
-};
-
-els.apiKey.value = stored.key;
-els.apiModel.value = stored.model;
-
-els.settingsToggle.addEventListener("click", () => {
-  els.settings.hidden = !els.settings.hidden;
-});
-els.saveSettings.addEventListener("click", () => {
-  stored.key = els.apiKey.value.trim();
-  stored.model = els.apiModel.value.trim() || "claude-haiku-4-5";
-  setStatus(stored.key ? "Key saved in this browser. Answers will be composed by Claude." : "No key set — showing best passages instead.");
-  els.settings.hidden = true;
-});
-els.clearSettings.addEventListener("click", () => {
-  stored.key = "";
-  els.apiKey.value = "";
-  setStatus("Key removed.");
-});
-
 /* ── Index & embedding model ──────────────────────────────── */
 
 let index = null;
@@ -280,6 +246,22 @@ if ("requestIdleCallback" in window) {
 async function retrieve(question, scope = "auto") {
   const idx = await loadIndex();
   const scopedChunks = filterChunksByScope(idx.chunks, scope);
+  const hubDirectory = buildStructuredHubDirectoryAnswer(scopedChunks, question);
+  if (hubDirectory) {
+    return {
+      results: hubDirectory.chunks.map((chunk) => ({
+        chunk,
+        cosine: 1,
+        exactCodeMatch: false,
+        structuredListMatch: true,
+        score: 1,
+      })),
+      query: null,
+      codeTerms: [],
+      structuredAnswer: hubDirectory.answer,
+      structuredNote: "Complete result from every matching row in Hubverse's verified directory table.",
+    };
+  }
   const structuredList = buildStructuredCodeListAnswer(scopedChunks, question);
   if (structuredList) {
     const results = structuredList.chunks.slice(0, TOP_K).map((chunk) => ({
@@ -293,7 +275,8 @@ async function retrieve(question, scope = "auto") {
       results,
       query: null,
       codeTerms: [],
-      structuredListAnswer: structuredList.answer,
+      structuredAnswer: structuredList.answer,
+      structuredNote: "Complete code list from every matching workbook row.",
     };
   }
 
@@ -305,7 +288,7 @@ async function retrieve(question, scope = "auto") {
     topK: TOP_K,
     minScore: MIN_SCORE,
   });
-  return { results, query, codeTerms, structuredListAnswer: null };
+  return { results, query, codeTerms, structuredAnswer: null, structuredNote: null };
 }
 
 /**
@@ -381,46 +364,6 @@ async function composeExtractiveAnswer(queryVec, results) {
   return best.units.map((u) => u.text).join(hasRows ? "\n" : " ");
 }
 
-/* ── Optional Claude synthesis ────────────────────────────── */
-
-async function composeAnswer(question, results) {
-  const context = results
-    .map((r, i) => `[${i + 1}] (${r.chunk.source})\n${r.chunk.text}`)
-    .join("\n\n---\n\n");
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": stored.key,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: stored.model,
-      max_tokens: 700,
-      system:
-        "You are the front desk assistant for an organization. Answer the visitor's question using ONLY the numbered reference passages provided. Cite passages inline like [1] or [2]. If the passages don't contain the answer, say so plainly and suggest what they might look for instead. Be warm, concise, and professional.",
-      messages: [
-        {
-          role: "user",
-          content: `Reference passages:\n\n${context}\n\nVisitor's question: ${question}`,
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Claude request failed (${res.status}). ${body.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  return (data.content || [])
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
-}
-
 /* ── Rendering ────────────────────────────────────────────── */
 
 function escapeHtml(text) {
@@ -436,23 +379,6 @@ function sourceUrl(idx, chunk) {
   return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
-function aiIssueUrl(idx, question, scope = "auto") {
-  if (!idx?.repo) return null;
-  const cleanQuestion = String(question || "").trim().slice(0, 3000);
-  const title = encodeURIComponent(`[Front Desk AI] ${cleanQuestion.slice(0, 90)}`);
-  const body = encodeURIComponent([
-    "<!-- front-desk-ai -->",
-    "### Question",
-    cleanQuestion,
-    "",
-    "### Search scope",
-    scope,
-    "",
-    "_Submit this issue to receive a source-cited answer from the free GitHub Models workflow._",
-  ].join("\n"));
-  return `https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}`;
-}
-
 function addFeedback(entry, question, answer, scope = "auto") {
   const idx = index;
   if (!idx || !idx.repo) return;
@@ -462,10 +388,7 @@ function addFeedback(entry, question, answer, scope = "auto") {
   const body = encodeURIComponent(
     `**Question asked:**\n${question}\n\n**Search scope:** ${scope}\n\n**Answer shown:**\n${answer.slice(0, 1000)}\n\n**What was wrong or missing:**\n(please describe)`
   );
-  const aiUrl = aiIssueUrl(idx, question, scope);
-  row.innerHTML =
-    `${aiUrl ? `<a href="${aiUrl}" target="_blank" rel="noopener">Ask the GitHub AI for a cited answer</a> · ` : ""}` +
-    `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a>.`;
+  row.innerHTML = `Not right? <a href="https://github.com/${idx.repo}/issues/new?title=${title}&body=${body}" target="_blank" rel="noopener">Report this answer</a>.`;
   entry.appendChild(row);
 }
 
@@ -506,8 +429,13 @@ function renderSources(entry, idx, results) {
     card.innerHTML = `
       <p class="source-title">${escapeHtml(r.chunk.title)}</p>
       <p class="source-path">${escapeHtml(r.chunk.source)}</p>
+      ${r.chunk.location ? `<p class="source-location">Location: ${escapeHtml(r.chunk.location)}</p>` : ""}
       <p class="source-snippet">${escapeHtml(r.chunk.text.slice(0, 220))}</p>
-      <p class="source-score">${r.bm25 > 0 ? "Hybrid semantic + exact-word match" : `${Math.round(Math.max(0, Math.min(1, r.cosine)) * 100)}% semantic match`}</p>
+      <p class="source-score">${r.chunk.kind === "hub-directory"
+        ? `Verified structured source${r.chunk.sourceUpdated ? ` · updated ${escapeHtml(r.chunk.sourceUpdated)}` : ""}`
+        : r.bm25 > 0
+          ? "Hybrid semantic + exact-word match"
+          : `${Math.round(Math.max(0, Math.min(1, r.cosine)) * 100)}% semantic match`}</p>
     `;
     wrap.appendChild(card);
   }
@@ -517,24 +445,6 @@ function renderSources(entry, idx, results) {
 /* ── Ask flow ─────────────────────────────────────────────── */
 
 let busy = false;
-
-els.askAiButton?.addEventListener("click", async () => {
-  const question = els.question.value.trim();
-  if (!question) {
-    setStatus("Type a question first, then choose Ask AI on GitHub.");
-    els.question.focus();
-    return;
-  }
-  try {
-    const idx = await loadIndex();
-    const url = aiIssueUrl(idx, question, els.sourceScope?.value || "auto");
-    if (!url) throw new Error("the deployed index does not identify its GitHub repository");
-    window.open(url, "_blank", "noopener");
-    setStatus("GitHub opened in a new tab. Submit the prefilled issue to receive the AI answer.");
-  } catch (err) {
-    setStatus(`Couldn't open the GitHub AI request: ${err.message}`);
-  }
-});
 
 els.form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -558,7 +468,7 @@ els.form.addEventListener("submit", async (event) => {
   const answerEl = entry.querySelector(".entry-answer");
 
   try {
-    const { results, query, codeTerms, structuredListAnswer } = await retrieve(question, scope);
+    const { results, query, codeTerms, structuredAnswer, structuredNote } = await retrieve(question, scope);
     const idx = await loadIndex();
 
     const confidence = results.length ? results[0].cosine : 0;
@@ -579,34 +489,19 @@ els.form.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (structuredListAnswer) {
-      answerEl.textContent = structuredListAnswer;
+    if (structuredAnswer) {
+      answerEl.textContent = structuredAnswer;
       const note = document.createElement("p");
       note.className = "entry-note";
-      note.textContent = "Complete code list from every matching workbook row — sources below.";
+      note.textContent = `${structuredNote} Source and exact location are below.`;
       entry.appendChild(note);
-    } else if (stored.key) {
-      answerEl.textContent = "Composing an answer…";
-      try {
-        const generatedAnswer = await composeAnswer(question, results);
-        const verification = verifyCitedAnswer(generatedAnswer, results);
-        if (!verification.ok) throw new Error("the generated answer was not fully supported by its citations");
-        answerEl.textContent = generatedAnswer;
-      } catch (err) {
-        answerEl.textContent = formatExactCodeResults(results, codeTerms)
-          || await composeExtractiveAnswer(query, results);
-        const note = document.createElement("p");
-        note.className = "entry-note";
-        note.textContent = `Answer synthesis was unavailable or did not pass source verification (${err.message}) — showing a source-grounded answer instead.`;
-        entry.appendChild(note);
-      }
     } else {
-      answerEl.textContent = "Composing an answer…";
+      answerEl.textContent = "Selecting the best supported passage…";
       answerEl.textContent = formatExactCodeResults(results, codeTerms)
         || await composeExtractiveAnswer(query, results);
       const note = document.createElement("p");
       note.className = "entry-note";
-      note.textContent = "Composed from the most relevant material in our files — sources below.";
+      note.textContent = "Quoted or formatted from the most relevant indexed material; source and location are below.";
       entry.appendChild(note);
     }
 

@@ -15,11 +15,11 @@
     window.FRONT_DESK = {
       orgName: "Your Organization",          // shown in the header eyebrow
       tagline: "How can we help?",           // hero heading
-      subtitle: "Ask anything about our docs, policies, and guides. Answers come straight from the files in this repository.",
+      subtitle: "Ask about our documents or the Hubverse directory. Every answer stays tied to a cited source.",
       suggestions: [                          // example questions shown as chips
-        "How do I get started?",
-        "Who do I contact for support?",
-        "Where are the policies?"
+        "What hubs are available?",
+        "Which active hubs are available?",
+        "How do I get started with Hubverse?"
       ]
     };
   </script>
@@ -56,7 +56,6 @@
           aria-label="Your question"
         />
         <button type="submit" class="ask-button" id="ask-button">Ask</button>
-        <button type="button" class="ai-button" id="ask-ai-button">Ask AI on GitHub</button>
       </form>
 
       <div class="source-filter">
@@ -67,7 +66,7 @@
           <option value="website">Hubverse website</option>
           <option value="docs">Hubverse documentation</option>
         </select>
-        <span class="ai-note">GitHub sign-in required for the free AI answer</span>
+        <span class="ai-note">Search and answers run without a paid API</span>
       </div>
 
       <div class="chips" id="chips"></div>
@@ -82,30 +81,7 @@
     <p id="footer-note">Answers are drawn from the files in this repository.</p>
     <p class="colophon-meta">
       <span id="index-meta"></span>
-      <button type="button" class="settings-link" id="settings-toggle">Answer settings</button>
     </p>
-    <div class="settings" id="settings" hidden>
-      <h2>Answer synthesis <span class="optional-tag">optional</span></h2>
-      <p>
-        Out of the box, the Front Desk finds and shows the most relevant passages
-        from the repository — completely free, nothing leaves your browser.
-        Add an Anthropic API key to have Claude write a composed answer from
-        those passages. The key is stored only in <em>your</em> browser
-        (localStorage) and is sent only to Anthropic.
-      </p>
-      <div class="settings-row">
-        <label for="api-key">Anthropic API key</label>
-        <input type="password" id="api-key" placeholder="sk-ant-…" autocomplete="off" />
-      </div>
-      <div class="settings-row">
-        <label for="api-model">Model</label>
-        <input type="text" id="api-model" value="claude-haiku-4-5" />
-      </div>
-      <div class="settings-actions">
-        <button type="button" id="save-settings">Save</button>
-        <button type="button" class="ghost" id="clear-settings">Remove key</button>
-      </div>
-    </div>
   </footer>
 
   <script type="module" src="app.js"></script>
