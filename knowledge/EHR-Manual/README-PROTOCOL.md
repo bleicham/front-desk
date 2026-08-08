@@ -40,6 +40,14 @@ The table below documents protocol decisions, rationale, and reference sources f
 
 For identifying diagnoses, this protocol uses **ICD-10-CM codes**. Code ranges and specific codes for each condition are listed in the `ICD-10` tab of the code list file.
 
+To pull the ICD-10 codes used by this protocol, open
+`DMA_PRIME_codes. 2025 final version - github.xlsx`, select the `ICD-10` tab,
+take the identifier from the `Code` column, and filter with the `Condition`
+column. Read the `Description` and any `Start Date` / `End Date` restrictions
+before applying a code. For provenance and annual verification links, use rows
+7–8 of the `Sources - General code lists` tab and the **Code System Sources**
+section of this README.
+
 ### Testing and Vaccination
 
 For identifying testing and vaccination events, this protocol uses a **dual-search strategy** combining structured codes and wildcard text searches. This approach is necessary because health systems do not consistently populate LOINC or CVX codes in their EHR data — these fields are frequently missing, inconsistently coded, or system-dependent.
@@ -76,14 +84,14 @@ The date-restricted codes (B34.2, B97.29, and J80) were used during the early pa
 
 | File | Description |
 |------|-------------|
-| `DMA_PRIME_codes_2025_final_version.xlsx` | Master code list workbook containing all conditions, code types, and source references |
+| `DMA_PRIME_codes. 2025 final version - github.xlsx` | Master code list workbook containing all conditions, code types, and source references |
 
 **Workbook tabs:**
 
 | Tab | Contents |
 |-----|----------|
-| Sources – General code lists | Links and notes for each coding system (LOINC, CPT, CVX, RXNorm, ICD-10) |
-| Sources – disease | Condition-specific rationale, protocol decisions, and reference links |
+| Sources - General code lists | Links and notes for each coding system (LOINC, CPT, CVX, RXNorm, ICD-10) |
+| Sources - disease | Condition-specific rationale, protocol decisions, and reference links |
 | ICD-10 | ICD-10-CM diagnosis codes for all conditions of interest |
 | LOINC | LOINC codes for laboratory and testing events |
 | CVX | CVX vaccine codes |

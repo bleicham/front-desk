@@ -276,6 +276,7 @@ body {
 }
 
 .entry-answer { margin: 0 0 6px; white-space: pre-wrap; }
+.entry-answer a { color: var(--brass); overflow-wrap: anywhere; }
 
 .entry-answer .cite {
   font-family: var(--mono);

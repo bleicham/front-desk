@@ -3,6 +3,7 @@ import { env, pipeline } from "@xenova/transformers";
 import {
   buildStructuredCodeListAnswer,
   buildStructuredHubDirectoryAnswer,
+  buildSourceLocationAnswer,
   extractCodeTerms,
   filterChunksByScope,
   formatExactCodeResults,
@@ -78,6 +79,16 @@ async function runCase(testCase) {
         detail: `${list?.hubCount || 0}`,
       });
     }
+  } else if (testCase.type === "source-location") {
+    const location = buildSourceLocationAnswer(chunks, testCase.question);
+    answer = location?.answer || "";
+    results = (location?.chunks || []).map((chunk) => ({
+      chunk,
+      cosine: 1,
+      structuredListMatch: true,
+      score: 1,
+    }));
+    checks.push({ check: "source-location handler answered", pass: Boolean(location) });
   } else {
     const codeTerms = extractCodeTerms(testCase.question);
     const vector = codeTerms.length

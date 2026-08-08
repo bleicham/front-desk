@@ -1,5 +1,19 @@
 [
   {
+    "id": "icd10-source-location",
+    "type": "source-location",
+    "scope": "codes",
+    "question": "Where can I pull ICD-10 codes from the source?",
+    "answerIncludes": [
+      "DMA_PRIME_codes. 2025 final version - github.xlsx",
+      "Tab: ICD-10",
+      "Code, Condition, Description, Start Date, End Date",
+      "https://www.aapc.com/codes/code-search/",
+      "https://www.cms.gov/medicare/coding-billing/icd-10-codes"
+    ],
+    "sourcePattern": "DMA_PRIME_codes"
+  },
+  {
     "id": "icd-exact-j1282",
     "type": "lookup",
     "scope": "codes",

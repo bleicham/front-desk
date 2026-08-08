@@ -13,6 +13,7 @@
 import {
   buildStructuredCodeListAnswer,
   buildStructuredHubDirectoryAnswer,
+  buildSourceLocationAnswer,
   filterChunksByScope,
   formatExactCodeResults,
   formatStructuredRows,
@@ -246,6 +247,22 @@ if ("requestIdleCallback" in window) {
 async function retrieve(question, scope = "auto") {
   const idx = await loadIndex();
   const scopedChunks = filterChunksByScope(idx.chunks, scope);
+  const sourceLocation = buildSourceLocationAnswer(scopedChunks, question);
+  if (sourceLocation) {
+    return {
+      results: sourceLocation.chunks.map((chunk) => ({
+        chunk,
+        cosine: 1,
+        exactCodeMatch: false,
+        structuredListMatch: true,
+        score: 1,
+      })),
+      query: null,
+      codeTerms: [],
+      structuredAnswer: sourceLocation.answer,
+      structuredNote: "Exact file, workbook tab, fields, README sections, and provenance sources from the indexed materials.",
+    };
+  }
   const hubDirectory = buildStructuredHubDirectoryAnswer(scopedChunks, question);
   if (hubDirectory) {
     return {
@@ -379,6 +396,27 @@ function sourceUrl(idx, chunk) {
   return `https://github.com/${idx.repo}/blob/${idx.branch || "main"}/${chunk.source}`;
 }
 
+function setTextWithLinks(element, text) {
+  element.replaceChildren();
+  const value = String(text || "");
+  const urlPattern = /https?:\/\/[^\s]+/g;
+  let cursor = 0;
+  for (const match of value.matchAll(urlPattern)) {
+    const raw = match[0];
+    const url = raw.replace(/[),.;]+$/, "");
+    if (match.index > cursor) element.append(document.createTextNode(value.slice(cursor, match.index)));
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = url;
+    element.append(link);
+    if (raw.length > url.length) element.append(document.createTextNode(raw.slice(url.length)));
+    cursor = match.index + raw.length;
+  }
+  if (cursor < value.length) element.append(document.createTextNode(value.slice(cursor)));
+}
+
 function addFeedback(entry, question, answer, scope = "auto") {
   const idx = index;
   if (!idx || !idx.repo) return;
@@ -412,10 +450,12 @@ function renderSources(entry, idx, results) {
   entry.appendChild(label);
   const wrap = document.createElement("div");
   wrap.className = "sources";
-  // Show each source file once, at its best-scoring passage.
+  // Show each document once, but keep distinct workbook tabs because a
+  // navigation answer may cite both a code tab and a provenance/source tab.
   const seen = new Map();
   for (const r of results) {
-    if (!seen.has(r.chunk.source)) seen.set(r.chunk.source, r);
+    const key = `${r.chunk.source}\u0000${r.chunk.sheet || ""}`;
+    if (!seen.has(key)) seen.set(key, r);
   }
   for (const r of seen.values()) {
     const url = sourceUrl(idx, r.chunk);
@@ -490,15 +530,16 @@ els.form.addEventListener("submit", async (event) => {
     }
 
     if (structuredAnswer) {
-      answerEl.textContent = structuredAnswer;
+      setTextWithLinks(answerEl, structuredAnswer);
       const note = document.createElement("p");
       note.className = "entry-note";
       note.textContent = `${structuredNote} Source and exact location are below.`;
       entry.appendChild(note);
     } else {
       answerEl.textContent = "Selecting the best supported passage…";
-      answerEl.textContent = formatExactCodeResults(results, codeTerms)
+      const supportedAnswer = formatExactCodeResults(results, codeTerms)
         || await composeExtractiveAnswer(query, results);
+      setTextWithLinks(answerEl, supportedAnswer);
       const note = document.createElement("p");
       note.className = "entry-note";
       note.textContent = "Quoted or formatted from the most relevant indexed material; source and location are below.";

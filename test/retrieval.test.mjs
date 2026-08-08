@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildStructuredCodeListAnswer,
+  buildSourceLocationAnswer,
   extractCodeTerms,
   filterChunksByScope,
   findExactCodeLines,
@@ -127,6 +128,109 @@ test("source scopes keep website, docs, and workbook retrieval separate", () => 
   assert.deepEqual(filterChunksByScope(chunks, "codes"), [chunks[0]]);
   assert.deepEqual(filterChunksByScope(chunks, "website"), [chunks[1]]);
   assert.deepEqual(filterChunksByScope(chunks, "docs"), [chunks[2]]);
+});
+
+test("answers where to pull ICD-10 codes with the exact file, tab, fields, and sources", () => {
+  const workbook = "knowledge/EHR-Manual/DMA_PRIME_codes. 2025 final version - github.xlsx";
+  const chunks = [
+    {
+      kind: "spreadsheet",
+      source: workbook,
+      sheet: "ICD-10",
+      text: [
+        "## Sheet: ICD-10",
+        "Columns: Condition | Description | Domain Type | Code Type | Code | Start Date | End Date | Column 8 | Column 9",
+        "Row 2 | Condition: COVID-19 | Description: Coronavirus infection | Code Type: ICD-10 | Code: B34.2",
+      ].join("\n"),
+    },
+    {
+      kind: "spreadsheet",
+      source: workbook,
+      sheet: "ICD-10",
+      text: [
+        "## Sheet: ICD-10",
+        "Columns: Condition | Description | Domain Type | Code Type | Code | Start Date | End Date | Column 8 | Column 9",
+        "Row 679 | Condition: Example | Description: Final diagnosis | Code Type: ICD-10 | Code: Z99.9",
+      ].join("\n"),
+    },
+    {
+      kind: "spreadsheet",
+      source: workbook,
+      sheet: "Sources - General code lists",
+      text: [
+        "## Sheet: Sources - General code lists",
+        "Columns: Code name | Source | Notes",
+        "Row 7 | Code name: ICD-10 | Source: https://www.aapc.com/codes/code-search/ | Notes: Search and verify descriptions",
+        "Row 8 | Source: https://www.cms.gov/medicare/coding-billing/icd-10-codes | Notes: Official annual lists",
+      ].join("\n"),
+    },
+    {
+      kind: "document",
+      source: "knowledge/EHR-Manual/README-PROTOCOL.md",
+      text: "## Code System Sources\n| ICD-10 | https://www.aapc.com/codes/code-search/ | Cross-check CMS |",
+    },
+    {
+      kind: "document",
+      source: "knowledge/EHR-Manual/README-PROTOCOL.md",
+      text: "## Code Identification Strategy\n### Diagnoses\nICD-10 codes are listed in the ICD-10 tab.",
+    },
+  ];
+
+  const result = buildSourceLocationAnswer(
+    chunks,
+    "Where can I pull ICD-10 codes from the source?",
+  );
+  assert.ok(result);
+  assert.equal(result.answer.startsWith("ICD-10 source URLs"), true);
+  assert.equal(result.answer.includes(`File: ${workbook}`), true);
+  assert.equal(result.answer.includes("Tab: ICD-10"), true);
+  assert.equal(result.answer.includes("rows 1–679"), true);
+  assert.equal(result.answer.includes("Code, Condition, Description, Start Date, End Date"), true);
+  assert.equal(result.answer.includes("https://www.aapc.com/codes/code-search/"), true);
+  assert.equal(result.answer.includes("https://www.cms.gov/medicare/coding-billing/icd-10-codes"), true);
+  assert.equal(result.answer.includes("Code System Sources"), true);
+  assert.equal(
+    result.answer.indexOf("https://www.cms.gov/medicare/coding-billing/icd-10-codes")
+      < result.answer.indexOf("https://www.aapc.com/codes/code-search/"),
+    true,
+  );
+  assert.equal(
+    result.answer.indexOf("https://www.aapc.com/codes/code-search/")
+      < result.answer.indexOf(`File: ${workbook}`),
+    true,
+  );
+  assert.deepEqual(result.chunks.map((chunk) => chunk.sheet || "README"), [
+    "Sources - General code lists",
+    "ICD-10",
+    "README",
+  ]);
+
+  const tabResult = buildSourceLocationAnswer(chunks, "Which workbook tab contains ICD-10 codes?");
+  assert.equal(tabResult.answer.startsWith("ICD-10 code location"), true);
+  assert.equal(
+    tabResult.answer.indexOf(`File: ${workbook}`)
+      < tabResult.answer.indexOf("https://www.aapc.com/codes/code-search/"),
+    true,
+  );
+});
+
+test("explicit README questions boost README passages over other sources", () => {
+  const chunks = [
+    {
+      source: "knowledge/EHR-Manual/README-PROTOCOL.md",
+      title: "Code Identification Strategy",
+      text: "The diagnosis protocol lists codes in the ICD-10 tab.",
+      embedding: [0.3, 0],
+    },
+    {
+      source: "knowledge/other.txt",
+      title: "Diagnosis codes",
+      text: "The diagnosis protocol lists codes in a table.",
+      embedding: [0.9, 0],
+    },
+  ];
+  const { results } = rankChunks(chunks, [1, 0], "According to the README, where are diagnosis codes listed?");
+  assert.equal(results[0].chunk.source, "knowledge/EHR-Manual/README-PROTOCOL.md");
 });
 
 test("citation verification rejects unsupported generated claims", () => {

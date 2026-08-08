@@ -160,6 +160,177 @@ function sourceHost(chunk) {
   }
 }
 
+function normalizedSystemName(value) {
+  return normalizedWords(value).join("");
+}
+
+function sourceRowsForSystem(chunks, system) {
+  const wanted = normalizedSystemName(system);
+  const rows = [];
+  for (const chunk of chunks) {
+    if (!/sources?\s*[-–—]\s*general\s+code\s+lists?/i.test(chunk.sheet || "")) continue;
+    let currentSystem = "";
+    for (const line of String(chunk.text || "").split(/\n+/)) {
+      const record = parseStructuredRow(line, chunk.sheet);
+      if (!record) continue;
+      const codeName = getField(record.fields, "Code name", "Code Name");
+      if (codeName) currentSystem = codeName;
+      if (normalizedSystemName(currentSystem) !== wanted) continue;
+      const source = getField(record.fields, "Source");
+      const notes = getField(record.fields, "Notes");
+      const rowNumber = Number(line.match(/^Row\s+(\d+)/i)?.[1] || 0);
+      if (source) rows.push({ source, notes, rowNumber, chunk });
+    }
+  }
+  const seen = new Set();
+  return rows.filter((row) => {
+    if (seen.has(row.source)) return false;
+    seen.add(row.source);
+    return true;
+  });
+}
+
+function sheetRows(chunks, system) {
+  const wanted = normalizedSystemName(system);
+  return chunks.filter((chunk) => chunk.sheet && normalizedSystemName(chunk.sheet) === wanted);
+}
+
+function navigationFields(system, headers) {
+  const preferred = {
+    "icd10": ["Code", "Condition", "Description", "Start Date", "End Date"],
+    "loinc": ["LOINC_NUM", "CONDITION", "COMPONENT", "SYSTEM", "METHOD_TYP"],
+    "cpt": ["Code", "Condition", "Description", "Domain Type"],
+    "cvx": ["CVX Code", "Condition", "CVX Short Description", "VaccineStatus"],
+    "rxnorm": ["RxCUI Code", "Drug Class/Category", "Drug Name"],
+    "socialhistory": ["Code", "Condition", "Description", "Code Type"],
+  }[normalizedSystemName(system)] || [];
+  const available = new Map(headers.map((header) => [header.toLowerCase(), header]));
+  return preferred.map((name) => available.get(name.toLowerCase())).filter(Boolean);
+}
+
+function markdownSectionsForSystem(chunks, system) {
+  const wanted = normalizedSystemName(system);
+  const matches = [];
+  for (const chunk of chunks) {
+    if (!/(?:^|\/)readme(?:-[^/]*)?\.md$/i.test(chunk.source || "")) continue;
+    if (!String(chunk.text || "").toLowerCase().includes(system.toLowerCase())) continue;
+    const heading = String(chunk.text || "").match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() || "README passage";
+    const lines = String(chunk.text || "").split(/\n+/).filter((line) => {
+      if (!line.toLowerCase().includes(system.toLowerCase())) return false;
+      return normalizedSystemName(line).includes(wanted);
+    });
+    matches.push({ chunk, heading, lines });
+  }
+  return matches;
+}
+
+/**
+ * Deterministically answer navigation/provenance questions such as
+ * “Where can I pull ICD-10 codes from the source?” using the actual indexed
+ * file path, sheet name, columns, README sections, and source URLs.
+ */
+export function buildSourceLocationAnswer(chunks, question) {
+  const systems = requestedSystems(question);
+  const provenanceIntent = /\b(?:source|sources|url|urls|website|websites|links?|upstream|official|origin|provenance)\b/i.test(question)
+    || /\bpull\b[\s\S]*\bfrom\b/i.test(question);
+  const repositoryIntent = /\b(?:file|workbook|sheet|tab|located|location|repository|repo)\b/i.test(question);
+  const locationIntent = provenanceIntent
+    || repositoryIntent
+    || /\b(?:where|pull|download|access|find|get)\b/i.test(question);
+  const codeIntent = systems.length || /\b(?:clinical\s+codes?|code\s+lists?|codes?)\b/i.test(question);
+  if (!locationIntent || !codeIntent) return null;
+
+  const availableSystems = ["ICD-10", "LOINC", "CPT", "CVX", "RXNorm", "Social History"]
+    .filter((system) => sheetRows(chunks, system).length);
+  const selectedSystems = systems.length ? systems.filter((system) => sheetRows(chunks, system).length) : availableSystems;
+  if (!selectedSystems.length) return null;
+
+  const answer = [];
+  const citations = [];
+  for (const system of selectedSystems) {
+    const codeChunks = sheetRows(chunks, system);
+    const source = codeChunks[0].source;
+    const rowNumbers = codeChunks.flatMap((chunk) =>
+      [...String(chunk.text || "").matchAll(/^Row\s+(\d+)\s*\|/gmi)].map((match) => Number(match[1]))
+    );
+    const maxRow = rowNumbers.length ? Math.max(...rowNumbers) : null;
+    const headers = String(codeChunks[0].text || "")
+      .match(/^Columns:\s*(.+)$/mi)?.[1]?.split(/\s+\|\s+/).map((value) => value.trim()) || [];
+    const fields = navigationFields(system, headers);
+    const provenance = sourceRowsForSystem(chunks, system).sort((a, b) => {
+      const priority = (row) => /\b(?:official|recommend starting|maintained by (?:the )?cdc)\b|cms\.gov/i.test(`${row.notes} ${row.source}`) ? 0 : 1;
+      return priority(a) - priority(b) || a.rowNumber - b.rowNumber;
+    });
+
+    if (answer.length) answer.push("");
+    if (provenanceIntent && provenance.length) {
+      answer.push(`${system} source URLs`);
+      for (const row of provenance) {
+        answer.push(`• ${row.source}${row.notes ? ` — ${shorten(row.notes, 180)}` : ""}`);
+      }
+      if (system === "ICD-10") {
+        answer.push("• Recommendation: start with the official CMS annual code lists, then use AAPC as a searchable cross-check.");
+      }
+      answer.push("", "Protocol-selected codes already loaded in this repository");
+    } else {
+      answer.push(`${system} code location`);
+    }
+    answer.push(`• File: ${source}`);
+    answer.push(`• Tab: ${codeChunks[0].sheet}`);
+    if (maxRow) answer.push(`• Range: rows 1–${maxRow} (${Math.max(0, maxRow - 1).toLocaleString()} data rows plus the header)`);
+    if (fields.length) answer.push(`• Use these fields: ${fields.join(", ")}`);
+    if (system === "ICD-10") {
+      answer.push("• Pull identifiers from the Code column; filter by Condition and verify the Description and any Start Date/End Date restrictions.");
+    }
+
+    const codeCitation = {
+      ...codeChunks[0],
+      title: `${system} code list`,
+      text: `${system} codes in ${source}, tab ${codeChunks[0].sheet}${maxRow ? `, rows 1–${maxRow}` : ""}.`,
+      location: `Sheet “${codeChunks[0].sheet}”${maxRow ? ` — rows 1–${maxRow}` : ""}`,
+    };
+
+    if (provenance.length) {
+      if (!provenanceIntent) {
+        answer.push("• Original/verification sources:");
+        for (const row of provenance) {
+          answer.push(`  - ${row.source}${row.notes ? ` — ${shorten(row.notes, 180)}` : ""}`);
+        }
+      }
+      const minRow = Math.min(...provenance.map((row) => row.rowNumber));
+      const maxSourceRow = Math.max(...provenance.map((row) => row.rowNumber));
+      const sourceCitation = {
+        ...provenance[0].chunk,
+        title: `${system} provenance sources`,
+        text: provenance.map((row) => `${row.source}${row.notes ? ` — ${row.notes}` : ""}`).join("\n"),
+        location: `Sheet “${provenance[0].chunk.sheet}” — ${minRow === maxSourceRow ? `row ${minRow}` : `rows ${minRow}–${maxSourceRow}`}`,
+      };
+      if (provenanceIntent) citations.push(sourceCitation, codeCitation);
+      else citations.push(codeCitation, sourceCitation);
+    } else {
+      citations.push(codeCitation);
+    }
+
+    const readmeSections = markdownSectionsForSystem(chunks, system);
+    if (readmeSections.length) {
+      const sectionNames = unique(readmeSections.map((item) => item.heading));
+      answer.push(`• Protocol README: ${sectionNames.map((name) => `“${name}”`).join(", ")}`);
+      citations.push({
+        ...readmeSections[0].chunk,
+        title: `Protocol README — ${system}`,
+        text: readmeSections.flatMap((item) => item.lines).join("\n").slice(0, 1200),
+        location: `Sections ${sectionNames.map((name) => `“${name}”`).join(", ")}`,
+      });
+    }
+  }
+
+  return {
+    answer: answer.join("\n"),
+    chunks: citations,
+    systems: selectedSystems,
+  };
+}
+
 /** Extract identifiers that should be matched literally, not semantically. */
 export function extractCodeTerms(text) {
   const value = String(text || "");
@@ -463,6 +634,7 @@ export function rankChunks(chunks, queryVector, question, options = {}) {
   const terms = unique(searchTokens(question));
   const codeTerms = extractCodeTerms(question);
   const websiteIntent = /\b(?:website|webpage|web page|site|hubverse)\b/i.test(question);
+  const readmeIntent = /\b(?:readme|protocol)\b/i.test(question);
 
   // BM25 gives rare exact words and acronyms real weight. Titles, sheet names,
   // and source paths count more than ordinary body occurrences.
@@ -519,11 +691,14 @@ export function rankChunks(chunks, queryVector, question, options = {}) {
       const semanticRrf = semanticRank ? 1 / (rrfK + semanticRank) : 0;
       const lexicalRrf = lexicalRank ? 1 / (rrfK + lexicalRank) : 0;
       const sourceBoost = websiteIntent && result.chunk.kind === "website" ? 0.012 : 0;
+      const readmeBoost = readmeIntent && /(?:^|\/)readme(?:-[^/]*)?\.md$/i.test(result.chunk.source || "")
+        ? 0.05
+        : 0;
       return {
         ...result,
         semanticRank,
         lexicalRank: lexicalRank || null,
-        score: semanticRrf + lexicalRrf + sourceBoost + (result.exactCodeMatch ? 1 : 0),
+        score: semanticRrf + lexicalRrf + sourceBoost + readmeBoost + (result.exactCodeMatch ? 1 : 0),
       };
     })
     .filter((result) => result.exactCodeMatch || result.cosine >= minScore || result.bm25 > 0)

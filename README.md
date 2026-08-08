@@ -8,6 +8,8 @@ The accuracy rules are intentionally strict:
 - Complete Hubverse directory questions use every row in the official table,
   not a limited set of search results.
 - Clinical-code list questions scan every matching spreadsheet row.
+- Code-location questions return the actual file, tab, fields, workbook range,
+  README sections, and original verification links.
 - Ordinary questions use local embeddings plus exact-word ranking, then quote
   or format the best matching source passage.
 - Weak matches return “I don't have a confident answer” instead of guessing.
@@ -74,6 +76,20 @@ handled deterministically:
 - `Which active hubs are available?`
 - `List the archival hubs.`
 - `Which hubs have RSV?`
+
+Source-navigation questions are also deterministic, for example:
+
+- `Where can I pull ICD-10 codes from the source?`
+- `Where are the LOINC codes located?`
+- `Which tab contains CVX codes?`
+
+The wording controls the emphasis: `source`, `URL`, `website`, `official`, or
+`link` puts upstream source URLs first; `file`, `workbook`, `sheet`, or `tab`
+puts the repository location first. For ICD-10, the answer recommends the
+official CMS annual lists first and AAPC as the searchable cross-check.
+
+Questions that explicitly say `README` or `protocol` receive a ranking boost
+for `README-PROTOCOL.md`, avoiding an answer from a nearby spreadsheet passage.
 
 ## Add your own documents
 
